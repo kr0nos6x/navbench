@@ -1,0 +1,16 @@
+[project]
+name = "navbench"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Hasan Kocabaş", email = "319066250+kr0nos6x@users.noreply.github.com" }
+]
+requires-python = ">=3.13.15"
+dependencies = [
+    "matplotlib>=3.11.1",
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

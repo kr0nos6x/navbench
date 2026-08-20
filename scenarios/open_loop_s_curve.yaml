@@ -1,0 +1,32 @@
+name: open_loop_s_curve
+duration_s: 20.0
+dt_s: 0.02
+
+initial_state:
+  x_m: 0.0
+  y_m: 0.0
+  heading_deg: 0.0
+  speed_mps: 0.0
+  steering_deg: 0.0
+  acceleration_mps2: 0.0
+
+commands:
+  - until_s: 4.0
+    acceleration_mps2: 1.0
+    steering_deg: 0.0
+
+  - until_s: 9.0
+    acceleration_mps2: 0.0
+    steering_deg: 18.0
+
+  - until_s: 14.0
+    acceleration_mps2: 0.0
+    steering_deg: -18.0
+
+  - until_s: 18.0
+    acceleration_mps2: -0.8
+    steering_deg: 0.0
+
+  - until_s: 20.0
+    acceleration_mps2: -2.0
+    steering_deg: 0.0
