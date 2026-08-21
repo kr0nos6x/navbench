@@ -69,6 +69,12 @@ bool feed_hello(navbench::FirmwareSession& session, uint32_t sequence = 0U) {
   CHECK(wire::decodePayload(response.payload, response.payload_size, &ack) ==
         wire::Status::Ok);
   CHECK(ack.status == wire::HelloStatus::Ok);
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+  CHECK(session.stats().diagnostic_hello_packets == 1U);
+  CHECK(session.stats().diagnostic_last_parser_status ==
+        static_cast<uint8_t>(wire::Status::Ok));
+  CHECK(session.stats().diagnostic_last_hello_result == 1U);
+#endif
   return true;
 }
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+import navbench.transport as transport_module
 from navbench.transport import (
     DeterministicFaultTransport,
     InMemoryEndpoint,
     LinkFaultState,
+    PosixSerialTransport,
     SerialConfig,
     TransportError,
 )
@@ -53,6 +56,19 @@ class SerialConfigurationTests(unittest.TestCase):
             SerialConfig("")
         with self.assertRaises(ValueError):
             SerialConfig("/dev/example", 12345)
+
+    def test_open_configures_port_then_asserts_dtr_once(self) -> None:
+        with (
+            patch.object(transport_module.os, "open", return_value=17),
+            patch.object(transport_module.os, "close") as close,
+            patch.object(transport_module, "_configure_serial_fd") as configure,
+            patch.object(transport_module, "_assert_dtr") as assert_dtr,
+        ):
+            transport = PosixSerialTransport(SerialConfig("/dev/test", 115200))
+            configure.assert_called_once_with(17, 115200)
+            assert_dtr.assert_called_once_with(17)
+            transport.close()
+            close.assert_called_once_with(17)
 
 
 class FaultTransportTests(unittest.TestCase):

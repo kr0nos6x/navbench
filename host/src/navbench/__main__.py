@@ -7,12 +7,17 @@ from time import perf_counter
 
 from navbench.campaign import inspect_campaign, run_campaign
 from navbench.cil import replay_native_run, run_closed_loop
+from navbench.hardware import (
+    HardwareConfig,
+    run_physical_validation,
+    run_serial_diagnostic,
+)
 from navbench.runlog import CommandMode, RunEvent, RunLogger, RunReplay
 from navbench.scenario import load_scenario, run_scenario
 from navbench.simulator import save_plot
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="NavBench deterministic simulation and controller-in-the-loop tools."
     )
@@ -63,8 +68,43 @@ def main() -> None:
     inspect.add_argument("campaign", type=Path)
     inspect.set_defaults(handler=_inspect_campaign)
 
+    hardware = subparsers.add_parser(
+        "hardware",
+        help="validate Protocol v1 against a physical serial device",
+        epilog=(
+            "exit codes: 0 success, 10 port open, 20 handshake, "
+            "30 normal exchange, 40 watchdog, 50 diagnostic"
+        ),
+    )
+    hardware.add_argument(
+        "--port",
+        required=True,
+        help="serial device, for example /dev/cu.usbmodemXXXX",
+    )
+    hardware.add_argument("--baud", type=int, default=115200)
+    hardware.add_argument(
+        "--startup-delay",
+        type=float,
+        default=3.0,
+        metavar="SECONDS",
+        help="wait after opening USB CDC before HELLO (default: 3.0)",
+    )
+    hardware_mode = hardware.add_mutually_exclusive_group()
+    hardware_mode.add_argument(
+        "--watchdog-check",
+        action="store_true",
+        help="stop sensor traffic for 600 ms and require SAFE_STOP evidence",
+    )
+    hardware_mode.add_argument(
+        "--diagnostic",
+        choices=("usb", "protocol"),
+        help="read diagnostic firmware frames and test the selected path",
+    )
+    hardware.set_defaults(handler=_hardware)
+
     arguments = parser.parse_args()
-    arguments.handler(arguments)
+    result = arguments.handler(arguments)
+    return result if isinstance(result, int) else 0
 
 
 def _scenario_argument(parser: argparse.ArgumentParser, default: str) -> None:
@@ -195,6 +235,22 @@ def _inspect_campaign(arguments: argparse.Namespace) -> None:
     )
 
 
+def _hardware(arguments: argparse.Namespace) -> int:
+    config = HardwareConfig(
+        port=arguments.port,
+        baud=arguments.baud,
+        watchdog_check=arguments.watchdog_check,
+        startup_delay_s=arguments.startup_delay,
+    )
+    result = (
+        run_serial_diagnostic(config, arguments.diagnostic)
+        if arguments.diagnostic
+        else run_physical_validation(config)
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True, allow_nan=False))
+    return int(result.exit_code)
+
+
 def _parse_seeds(text: str) -> tuple[int, ...]:
     try:
         values = tuple(int(value.strip()) for value in text.split(",") if value.strip())
@@ -206,4 +262,4 @@ def _parse_seeds(text: str) -> tuple[int, ...]:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

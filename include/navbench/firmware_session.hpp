@@ -30,6 +30,11 @@ struct FirmwareSessionStats {
   uint32_t tx_dropped{0U};
   uint32_t loop_runs{0U};
   uint32_t max_loop_us{0U};
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+  uint32_t diagnostic_hello_packets{0U};
+  uint8_t diagnostic_last_parser_status{0U};
+  uint8_t diagnostic_last_hello_result{0U};
+#endif
 };
 
 class FirmwareSession {

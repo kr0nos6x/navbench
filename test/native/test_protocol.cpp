@@ -415,6 +415,19 @@ void testInvalidTypedPayloads() {
   health.gnss_nis_gate_rejected_count = 2U;
   CHECK(protocol::encodePayload(health, buffer, sizeof(buffer), &size) ==
         protocol::Status::InvalidValue);
+
+  protocol::ErrorPayload diagnostic = {};
+  diagnostic.code = protocol::ApplicationErrorCode::Diagnostic;
+  diagnostic.detail = 1U;
+  diagnostic.related_sequence = 0x4e424447UL;
+  diagnostic.context = 123U;
+  CHECK(protocol::encodePayload(diagnostic, buffer, sizeof(buffer), &size) ==
+        protocol::Status::Ok);
+  protocol::ErrorPayload decoded = {};
+  CHECK(protocol::decodePayload(buffer, size, &decoded) ==
+        protocol::Status::Ok);
+  CHECK(decoded.code == protocol::ApplicationErrorCode::Diagnostic);
+  CHECK(decoded.related_sequence == diagnostic.related_sequence);
 }
 
 void testPacketBoundaries() {
