@@ -1,0 +1,31 @@
+version: 1
+name: stop
+seed: 1005
+duration_s: 8.0
+dt_s: 0.02
+
+vehicle:
+  wheelbase_m: 0.32
+  steering_time_constant_s: 0.18
+  acceleration_time_constant_s: 0.25
+  max_steering_deg: 30.0
+  max_acceleration_mps2: 2.0
+  max_deceleration_mps2: 4.0
+  max_speed_mps: 5.0
+
+initial_state: {x_m: 0.0, y_m: 0.0, heading_deg: 0.0, speed_mps: 2.0}
+commands:
+  - {until_s: 3.0, acceleration_mps2: 0.0, steering_deg: 0.0}
+  - {until_s: 6.0, acceleration_mps2: -1.0, steering_deg: 0.0}
+  - {until_s: 8.0, acceleration_mps2: -4.0, steering_deg: 0.0}
+
+route:
+  - {x_m: 3.0, y_m: 0.0, target_speed_mps: 2.0}
+  - {x_m: 6.0, y_m: 0.0, target_speed_mps: 1.0}
+  - {x_m: 7.0, y_m: 0.0, target_speed_mps: 0.0, acceptance_radius_m: 0.4}
+
+landmarks:
+  - {landmark_id: 1, x_m: 2.0, y_m: 2.0}
+  - {landmark_id: 2, x_m: 6.0, y_m: -2.0}
+
+faults: []

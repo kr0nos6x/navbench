@@ -1,0 +1,61 @@
+version: 1
+name: fault_smoke
+seed: 424242
+duration_s: 10.0
+dt_s: 0.02
+
+vehicle:
+  wheelbase_m: 0.32
+  steering_time_constant_s: 0.18
+  acceleration_time_constant_s: 0.25
+  max_steering_deg: 30.0
+  max_acceleration_mps2: 2.0
+  max_deceleration_mps2: 4.0
+  max_speed_mps: 5.0
+
+initial_state: {x_m: 0.0, y_m: 0.0, heading_deg: 0.0, speed_mps: 0.5}
+commands:
+  - {until_s: 3.0, acceleration_mps2: 0.4, steering_deg: 4.0}
+  - {until_s: 7.0, acceleration_mps2: 0.0, steering_deg: -4.0}
+  - {until_s: 10.0, acceleration_mps2: -0.8, steering_deg: 0.0}
+
+sensors:
+  imu:
+    rate_hz: 50.0
+    acceleration_noise_std_mps2: 0.02
+    yaw_rate_noise_std_deg_s: 0.15
+    latency_s: 0.0
+  wheel_speed:
+    rate_hz: 25.0
+    noise_std_mps: 0.01
+    latency_s: 0.02
+  gnss:
+    rate_hz: 5.0
+    position_noise_std_m: 0.2
+    latency_s: 0.1
+  landmark:
+    rate_hz: 10.0
+    range_noise_std_m: 0.03
+    bearing_noise_std_deg: 0.5
+    max_range_m: 20.0
+    field_of_view_deg: 180.0
+    latency_s: 0.04
+    outlier_probability: 0.0
+
+route:
+  - {x_m: 3.0, y_m: 0.5, target_speed_mps: 1.5}
+  - {x_m: 7.0, y_m: 0.0, target_speed_mps: 1.5}
+  - {x_m: 10.0, y_m: 0.0, target_speed_mps: 0.0, acceptance_radius_m: 0.5}
+
+landmarks:
+  - {landmark_id: 1, x_m: 2.0, y_m: 3.0}
+  - {landmark_id: 2, x_m: 5.0, y_m: -2.0}
+  - {landmark_id: 3, x_m: 8.0, y_m: 3.0}
+
+faults:
+  - {target: gnss, kind: dropout, start_s: 2.0, end_s: 5.0}
+  - {target: wheel_speed, kind: scale_error, start_s: 3.0, end_s: 5.0, value: 0.25}
+  - {target: landmark, kind: dropout, start_s: 4.0, end_s: 6.0}
+  - {target: imu, kind: bias_acceleration_mps2, start_s: 6.0, end_s: 8.0, value: 0.3}
+  - {target: landmark, kind: outlier, start_s: 7.0, end_s: 8.0}
+  - {target: gnss, kind: latency_spike, start_s: 8.0, end_s: 9.0, value: 0.3}

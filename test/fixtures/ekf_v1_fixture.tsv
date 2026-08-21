@@ -1,0 +1,22 @@
+# Shared deterministic EKF fixture. All numeric values use SI units.
+# operation	timestamp_ms	operation-specific values	expected_update_status
+INIT	0	0.0	0.0	0.0	1.0	0.0	0.0	0
+IMU	20	0.02	0.20	0.10	0
+WHEEL	20	1.004	0
+GNSS	20	0.020	0.001	0
+LANDMARK	20	5.0	2.0	5.366	0.380	0
+IMU	40	0.02	0.15	0.20	0
+WHEEL	40	1.007	0
+IMU	60	0.02	0.05	0.35	0
+LANDMARK	60	-2.0	4.0	4.470	2.030	0
+IMU	80	0.02	-0.10	0.50	0
+WHEEL	80	1.005	0
+GNSS	80	0.081	0.006	0
+IMU	100	0.02	-0.15	0.65	0
+GNSS	100	500.0	-500.0	1
+LANDMARK	100	5.0	2.0	50.0	-2.5	1
+IMU	120	0.02	0.00	0.75	0
+WHEEL	120	1.000	0
+GNSS	120	0.121	0.014	0
+MODE	120	0
+MODE	2000	0

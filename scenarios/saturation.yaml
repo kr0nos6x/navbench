@@ -1,0 +1,29 @@
+version: 1
+name: saturation
+seed: 1004
+duration_s: 6.0
+dt_s: 0.02
+
+vehicle:
+  wheelbase_m: 0.32
+  steering_time_constant_s: 0.18
+  acceleration_time_constant_s: 0.25
+  max_steering_deg: 25.0
+  max_acceleration_mps2: 1.5
+  max_deceleration_mps2: 3.0
+  max_speed_mps: 2.5
+
+initial_state: {x_m: 0.0, y_m: 0.0, heading_deg: 0.0, speed_mps: 0.0}
+commands:
+  - {until_s: 3.0, acceleration_mps2: 20.0, steering_deg: 80.0}
+  - {until_s: 6.0, acceleration_mps2: -20.0, steering_deg: -80.0}
+
+route:
+  - {x_m: 1.0, y_m: 1.0, target_speed_mps: 2.5}
+  - {x_m: 0.0, y_m: 2.0, target_speed_mps: 0.0, acceptance_radius_m: 0.5}
+
+landmarks:
+  - {landmark_id: 1, x_m: 2.0, y_m: 2.0}
+  - {landmark_id: 2, x_m: -2.0, y_m: 2.0}
+
+faults: []
