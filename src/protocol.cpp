@@ -257,7 +257,7 @@ bool validSafeStopReason(SafeStopReason value) {
 
 bool validApplicationError(ApplicationErrorCode value) {
   return static_cast<uint16_t>(value) <=
-         static_cast<uint16_t>(ApplicationErrorCode::InternalFault);
+         static_cast<uint16_t>(ApplicationErrorCode::Diagnostic);
 }
 
 bool validNisSummary(uint32_t evaluated_count,

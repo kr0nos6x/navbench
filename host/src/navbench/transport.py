@@ -7,7 +7,9 @@ constructing it opens a device, so tests only validate its configuration helpers
 
 from __future__ import annotations
 
+import array
 import errno
+import fcntl
 import os
 import select
 import termios
@@ -383,6 +385,7 @@ class PosixSerialTransport:
 
         try:
             _configure_serial_fd(fd, config.baud)
+            _assert_dtr(fd)
         except BaseException:
             os.close(fd)
             raise
@@ -423,6 +426,16 @@ class PosixSerialTransport:
                 return b""
             raise TransportError(f"serial read failed: {error}") from error
 
+    def reset_input_buffer(self) -> None:
+        """Discard bytes received before the binary session starts."""
+
+        if not self.is_open:
+            raise TransportError("transport is closed")
+        try:
+            termios.tcflush(self._fd, termios.TCIFLUSH)
+        except (termios.error, OSError) as error:
+            raise TransportError(f"cannot flush serial input: {error}") from error
+
     def close(self) -> None:
         if self._fd >= 0:
             os.close(self._fd)
@@ -460,3 +473,17 @@ def _configure_serial_fd(fd: int, baud: int) -> None:
         termios.tcflush(fd, termios.TCIOFLUSH)
     except (KeyError, termios.error, OSError) as error:
         raise TransportError(f"cannot configure serial device: {error}") from error
+
+
+def _assert_dtr(fd: int) -> None:
+    """Assert USB CDC DTR once without a low-to-high reset pulse."""
+
+    request = getattr(termios, "TIOCMBIS", None)
+    dtr = getattr(termios, "TIOCM_DTR", None)
+    if request is None or dtr is None:
+        return
+    control_bits = array.array("i", [dtr])
+    try:
+        fcntl.ioctl(fd, request, control_bits, True)
+    except OSError as error:
+        raise TransportError(f"cannot assert serial DTR: {error}") from error

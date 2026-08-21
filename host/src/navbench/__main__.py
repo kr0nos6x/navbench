@@ -7,12 +7,17 @@ from time import perf_counter
 
 from navbench.campaign import inspect_campaign, run_campaign
 from navbench.cil import replay_native_run, run_closed_loop
+from navbench.hardware import (
+    HardwareConfig,
+    run_physical_validation,
+    run_serial_diagnostic,
+)
 from navbench.runlog import CommandMode, RunEvent, RunLogger, RunReplay
 from navbench.scenario import load_scenario, run_scenario
 from navbench.simulator import save_plot
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="NavBench deterministic simulation and controller-in-the-loop tools."
     )
@@ -63,15 +68,50 @@ def main() -> None:
     inspect.add_argument("campaign", type=Path)
     inspect.set_defaults(handler=_inspect_campaign)
 
+    hardware = subparsers.add_parser(
+        "hardware",
+        help="validate Protocol v1 against a physical serial device",
+        epilog=(
+            "exit codes: 0 success, 10 port open, 20 handshake, "
+            "30 normal exchange, 40 watchdog, 50 diagnostic"
+        ),
+    )
+    hardware.add_argument(
+        "--port",
+        required=True,
+        help="serial device, for example /dev/cu.usbmodemXXXX",
+    )
+    hardware.add_argument("--baud", type=int, default=115200)
+    hardware.add_argument(
+        "--startup-delay",
+        type=float,
+        default=3.0,
+        metavar="SECONDS",
+        help="wait after opening USB CDC before HELLO (default: 3.0)",
+    )
+    hardware_mode = hardware.add_mutually_exclusive_group()
+    hardware_mode.add_argument(
+        "--watchdog-check",
+        action="store_true",
+        help="stop sensor traffic for 600 ms and require SAFE_STOP evidence",
+    )
+    hardware_mode.add_argument(
+        "--diagnostic",
+        choices=("usb", "protocol"),
+        help="read diagnostic firmware frames and test the selected path",
+    )
+    hardware.set_defaults(handler=_hardware)
+
     arguments = parser.parse_args()
-    arguments.handler(arguments)
+    result = arguments.handler(arguments)
+    return result if isinstance(result, int) else 0
 
 
 def _scenario_argument(parser: argparse.ArgumentParser, default: str) -> None:
     parser.add_argument("--scenario", type=Path, default=Path(default))
 
 
-def _open_loop(arguments: argparse.Namespace) -> None:
+def _open_loop(arguments: argparse.Namespace) -> int:
     scenario = load_scenario(arguments.scenario)
     with RunLogger(
         arguments.output_root,
@@ -133,9 +173,10 @@ def _open_loop(arguments: argparse.Namespace) -> None:
             sort_keys=True,
         )
     )
+    return 0
 
 
-def _cil(arguments: argparse.Namespace) -> None:
+def _cil(arguments: argparse.Namespace) -> int:
     scenario = load_scenario(arguments.scenario)
     result = run_closed_loop(
         scenario,
@@ -145,9 +186,10 @@ def _cil(arguments: argparse.Namespace) -> None:
         create_dashboard=not arguments.no_dashboard,
     )
     print(json.dumps(result.summary, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if result.metric_summary.success else 1
 
 
-def _campaign(arguments: argparse.Namespace) -> None:
+def _campaign(arguments: argparse.Namespace) -> int:
     result = run_campaign(
         load_scenario(arguments.scenario),
         native_executable=arguments.native,
@@ -158,9 +200,10 @@ def _campaign(arguments: argparse.Namespace) -> None:
     )
     inspected = inspect_campaign(result.path)
     print(json.dumps(inspected, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if bool(inspected.get("acceptance_passed")) else 1
 
 
-def _replay(arguments: argparse.Namespace) -> None:
+def _replay(arguments: argparse.Namespace) -> int:
     replay = RunReplay(arguments.run, allow_incomplete=arguments.allow_incomplete)
     counts = {
         "ground_truth": sum(1 for _ in replay.ground_truth()),
@@ -176,23 +219,38 @@ def _replay(arguments: argparse.Namespace) -> None:
         "records_replayed": counts,
         "summary": replay.summary(),
     }
+    deterministic_match = True
     if arguments.native is not None:
-        result["native_controller_replay"] = replay_native_run(
+        native_result = replay_native_run(
             replay,
             native_executable=arguments.native,
-        ).to_dict()
-    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
-
-
-def _inspect_campaign(arguments: argparse.Namespace) -> None:
-    print(
-        json.dumps(
-            inspect_campaign(arguments.campaign),
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
         )
+        result["native_controller_replay"] = native_result.to_dict()
+        deterministic_match = native_result.deterministic_match
+    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if replay.is_complete and deterministic_match else 1
+
+
+def _inspect_campaign(arguments: argparse.Namespace) -> int:
+    result = inspect_campaign(arguments.campaign)
+    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if bool(result.get("acceptance_passed")) else 1
+
+
+def _hardware(arguments: argparse.Namespace) -> int:
+    config = HardwareConfig(
+        port=arguments.port,
+        baud=arguments.baud,
+        watchdog_check=arguments.watchdog_check,
+        startup_delay_s=arguments.startup_delay,
     )
+    result = (
+        run_serial_diagnostic(config, arguments.diagnostic)
+        if arguments.diagnostic
+        else run_physical_validation(config)
+    )
+    print(json.dumps(result.to_dict(), indent=2, sort_keys=True, allow_nan=False))
+    return int(result.exit_code)
 
 
 def _parse_seeds(text: str) -> tuple[int, ...]:
@@ -206,4 +264,4 @@ def _parse_seeds(text: str) -> tuple[int, ...]:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

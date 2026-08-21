@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <new>
 
 namespace navbench {
 namespace {
@@ -102,14 +103,18 @@ bool FirmwareSession::set_config(const FirmwareSessionConfig& config) {
 }
 
 void FirmwareSession::reset(uint32_t now_ms) {
-  core_ = EmbeddedControllerCore{};
+  // Placement construction restores default configuration without creating a
+  // 1.4 kB EmbeddedControllerCore temporary on the UNO R4 stack. It performs
+  // no heap allocation.
+  core_.~EmbeddedControllerCore();
+  new (&core_) EmbeddedControllerCore();
   core_.begin(now_ms);
   (void)core_.start_self_test();
   (void)core_.complete_self_test(true, now_ms);
   parser_.reset(true);
   sequence_.reset(true);
-  tx_queue_ = FixedQueue<TxFrame, kTxQueueCapacity>{};
-  sensor_queue_ = FixedQueue<PendingSensorFrame, kSensorQueueCapacity>{};
+  tx_queue_.clear();
+  sensor_queue_.clear();
   stats_ = FirmwareSessionStats{};
   tx_sequence_ = 0U;
   current_now_ms_ = now_ms;
@@ -132,6 +137,7 @@ void FirmwareSession::reset(uint32_t now_ms) {
   have_sensor_time_ = false;
   have_sensor_ = false;
   scheduled_task_mask_ = 0U;
+  last_steering_command_rad_ = 0.0F;
 }
 
 void FirmwareSession::packet_callback(const wire::Packet& packet,
@@ -142,6 +148,10 @@ void FirmwareSession::packet_callback(const wire::Packet& packet,
 void FirmwareSession::parser_error_callback(wire::Status status,
                                             void* context) {
   FirmwareSession* session = static_cast<FirmwareSession*>(context);
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+  session->stats_.diagnostic_last_parser_status =
+      static_cast<uint8_t>(status);
+#endif
   session->core_.runtime().record_rejected_input(parser_disposition(status));
   session->emit_error(session->last_step_id_,
                       wire::ApplicationErrorCode::BadPayload,
@@ -281,6 +291,11 @@ void FirmwareSession::handle_hello(const wire::Packet& packet) {
   wire::HelloPayload hello{};
   const wire::Status decode_status =
       wire::decodePayload(packet.payload, packet.payload_size, &hello);
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+  ++stats_.diagnostic_hello_packets;
+  stats_.diagnostic_last_parser_status =
+      static_cast<uint8_t>(decode_status);
+#endif
 
   wire::HelloAckPayload response{};
   response.accepted_version = wire::kProtocolVersion;
@@ -295,22 +310,41 @@ void FirmwareSession::handle_hello(const wire::Packet& packet) {
       hello.role != wire::EndpointRole::Host) {
     response.accepted_version = 0U;
     response.status = wire::HelloStatus::Rejected;
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result =
+        decode_status != wire::Status::Ok ? 2U : 3U;
+#endif
   } else if (hello.min_version > wire::kProtocolVersion ||
              hello.max_version < wire::kProtocolVersion) {
     response.accepted_version = 0U;
     response.status = wire::HelloStatus::VersionMismatch;
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result = 4U;
+#endif
   } else if ((hello.capabilities & kRequiredHostCapabilities) !=
-                 kRequiredHostCapabilities ||
-             hello.max_payload < kControllerMaximumOutboundPayloadSize ||
-             hello.heartbeat_timeout_ms !=
-                 RuntimeConfig::defaults().host_timeout_ms) {
+             kRequiredHostCapabilities) {
     response.accepted_version = 0U;
     response.status = wire::HelloStatus::Rejected;
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result = 5U;
+#endif
+  } else if (hello.max_payload < kControllerMaximumOutboundPayloadSize) {
+    response.accepted_version = 0U;
+    response.status = wire::HelloStatus::Rejected;
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result = 6U;
+#endif
+  } else if (hello.heartbeat_timeout_ms !=
+             RuntimeConfig::defaults().host_timeout_ms) {
+    response.accepted_version = 0U;
+    response.status = wire::HelloStatus::Rejected;
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result = 7U;
+#endif
   } else {
     stats_.tx_dropped += static_cast<uint32_t>(tx_queue_.size());
-    tx_queue_ = FixedQueue<TxFrame, kTxQueueCapacity>{};
-    sensor_queue_ =
-        FixedQueue<PendingSensorFrame, kSensorQueueCapacity>{};
+    tx_queue_.clear();
+    sensor_queue_.clear();
     tx_sequence_ = 0U;
     sequence_.reset(true);
     (void)sequence_.observe(packet.sequence);
@@ -319,6 +353,9 @@ void FirmwareSession::handle_hello(const wire::Packet& packet) {
     route_received_ = 0U;
     session_active_ = true;
     core_.notify_handshake(current_now_ms_);
+#if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
+    stats_.diagnostic_last_hello_result = 1U;
+#endif
   }
   (void)emit_payload(wire::MessageType::HelloAck, packet.step_id, response);
 }
@@ -566,6 +603,7 @@ void FirmwareSession::emit_controller_output(
                      : (effective.command.valid ? wire::ControlMode::Tracking
                                                 : wire::ControlMode::Neutral);
   command.flags = effective.command.route_complete ? 1U : 0U;
+  last_steering_command_rad_ = effective.command.steering_rad;
   (void)emit_payload(wire::MessageType::ControlCommand, step_id, command);
 
   wire::StateEstimatePayload estimate{};

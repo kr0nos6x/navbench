@@ -1,78 +1,46 @@
 # NavBench
 
 NavBench is a deterministic controller-in-the-loop testbed for a simulated
-planar ground vehicle and an Arduino UNO R4 WiFi controller. The host owns the
-plant, virtual sensors, experiment artifacts, replay, and metrics. The embedded
-side owns estimation, route following, control, and safety. Vehicle ground truth
-is never encoded in Protocol v1 or passed to the controller.
+planar vehicle and an Arduino UNO R4 WiFi controller. The host owns plant truth,
+virtual sensors, artifacts, replay, metrics, and campaigns. The embedded side
+owns Protocol v1 validation, estimation, route following, control, safety, and
+the logical HMI. Ground truth is never sent to the controller.
 
-## Status
+The repository is a `1.0.0rc1` software candidate, not a hardware-qualified
+release. See [requirements closure](docs/REQUIREMENTS.md) and [current status](PROJECT.md).
 
-The repository is a `1.0.0rc1` software candidate. It contains the fixed-step
-plant and scenario engine, seeded sensor and fault models, recoverable run logs,
-Protocol v1 codecs, host session/transports, a fixed-memory C++ firmware core,
-native controller-in-the-loop execution, bidirectional frame-aware link faults,
-a host stale-command safe-stop guard, campaign aggregation, and automated
-Python/C++ checks. Complete CIL artifacts record strict stream counts plus
-source-tree and controller-binary identity hashes; native replay enforces the
-recorded binary hash and typed command semantics as well as numerical output.
+## Software verification
 
-This status does not qualify real-board serial behavior, end-to-end hardware
-latency, runtime stack high-water/memory margin, physical HMI devices, or
-navigation performance on hardware. Static flash/global-RAM use is reported by
-the build; the remaining items are hardware gates.
-
-## Run and verify
-
-Use Python 3.13 and the locked dependencies in `host/uv.lock`.
+Python 3.13, a C++11 compiler, `uv`, and PlatformIO are required. One command
+runs locked-package/build checks, all Python and native C++ tests, shared
+Protocol v1 vectors and soak, deterministic native replay, a two-seed campaign
+smoke, and clean production/diagnostic UNO R4 cross-builds:
 
 ```sh
-uv sync --project host --locked
-
-mkdir -p build/native
-c++ -std=c++11 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude \
-  src/protocol.cpp src/ekf.cpp src/control.cpp src/runtime.cpp \
-  src/firmware_session.cpp test/native/native_firmware.cpp \
-  -o build/native/navbench_native_firmware
-c++ -std=c++11 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude \
-  src/ekf.cpp test/native/ekf_fixture_runner.cpp \
-  -o build/native/ekf_fixture_runner
-
-mkdir -p build/native-tests
-for source in test/native/test_*.cpp; do
-  name=${source##*/}
-  name=${name%.cpp}
-  c++ -std=c++11 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude \
-    src/protocol.cpp src/ekf.cpp src/control.cpp src/runtime.cpp \
-    src/firmware_session.cpp "$source" -o "build/native-tests/$name"
-  "build/native-tests/$name"
-done
-
-PYTHONPATH=host/src \
-NAVBENCH_NATIVE_FIRMWARE=build/native/navbench_native_firmware \
-NAVBENCH_EKF_FIXTURE_RUNNER=build/native/ekf_fixture_runner \
-uv run --project host --locked python -m unittest discover -s host/tests -v
-
-PYTHONPATH=host/src uv run --project host --locked python -m navbench cil \
-  --scenario scenarios/straight.yaml \
-  --native build/native/navbench_native_firmware
-
-PYTHONPATH=host/src uv run --project host --locked python -m navbench replay \
-  runs/straight --native build/native/navbench_native_firmware
-
-pio run -e uno_r4_wifi -t clean
-pio run -e uno_r4_wifi
+uv run --project host --locked python tools/verify.py
 ```
 
-Native C++ tests are standalone programs. The PlatformIO commands compile only;
-firmware upload and serial-port access are separate, explicit hardware
-operations.
+All CLI surfaces, including native CIL, replay, campaign, physical serial, and
+binary serial diagnostics, are listed by:
 
-## Documentation
+```sh
+uv run --project host --locked python -m navbench --help
+```
+
+Generated `build/` and `runs/` data are ignored by Git.
+
+## Hardware validation pending
+
+Computer-only and native-process checks do not qualify real USB/UART timing,
+UNO runtime stack high-water, physical OLED/LED behavior, or external buttons,
+buzzer, and servo wiring. The SG90 adapter is disabled by default and cannot be
+enabled without an explicit compile-time physical power/common-ground
+qualification flag. No physical pin is assumed for the unqualified modules.
+
+## Technical references
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Protocol v1](docs/PROTOCOL_V1.md)
 - [Plant, EKF, guidance, and control](docs/MODEL_EKF.md)
 - [Scenario format](docs/SCENARIOS.md)
 - [Product requirements](docs/PRD.md)
-- [Current acceptance status](PROJECT.md)

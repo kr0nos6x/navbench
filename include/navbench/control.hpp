@@ -119,6 +119,7 @@ class ControlSystem {
   ControlCommand neutral_command() const;
   ControlCommand safe_stop_command(float measured_speed_mps) const;
   const RouteManager& route() const { return route_; }
+  const ControlConfig& config() const { return config_; }
   float speed_integral() const { return speed_controller_.integral(); }
 
  private:

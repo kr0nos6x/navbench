@@ -96,6 +96,7 @@ enum class ApplicationErrorCode : uint16_t {
   RouteRejected = 3,
   NotReady = 4,
   InternalFault = 5,
+  Diagnostic = 6,
 };
 
 enum class Status : uint8_t {

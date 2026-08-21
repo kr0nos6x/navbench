@@ -115,6 +115,7 @@ class ApplicationErrorCode(IntEnum):
     ROUTE_REJECTED = 3
     NOT_READY = 4
     INTERNAL_FAULT = 5
+    DIAGNOSTIC = 6
 
 
 class ProtocolErrorCode(IntEnum):
