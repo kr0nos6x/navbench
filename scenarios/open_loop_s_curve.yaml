@@ -1,6 +1,17 @@
+version: 1
 name: open_loop_s_curve
+seed: 0
 duration_s: 20.0
 dt_s: 0.02
+
+vehicle:
+  wheelbase_m: 0.32
+  steering_time_constant_s: 0.18
+  acceleration_time_constant_s: 0.25
+  max_steering_deg: 30.0
+  max_acceleration_mps2: 2.0
+  max_deceleration_mps2: 4.0
+  max_speed_mps: 8.0
 
 initial_state:
   x_m: 0.0
@@ -30,3 +41,7 @@ commands:
   - until_s: 20.0
     acceleration_mps2: -2.0
     steering_deg: 0.0
+
+route: []
+landmarks: []
+faults: []

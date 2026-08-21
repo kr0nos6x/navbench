@@ -1,13 +1,11 @@
 [project]
 name = "navbench"
-version = "0.1.0"
-description = "Add your description here"
-authors = [
-    { name = "Hasan Kocabaş", email = "319066250+kr0nos6x@users.noreply.github.com" }
-]
+version = "1.0.0rc1"
+description = "Deterministic controller-in-the-loop navigation benchmark"
 requires-python = ">=3.13.15"
 dependencies = [
     "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
     "pyyaml>=6.0.3",
 ]
 
