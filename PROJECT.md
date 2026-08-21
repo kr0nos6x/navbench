@@ -17,30 +17,34 @@ computer-only verification; it is not yet a hardware-qualified release.
 | Firmware core | Fixed queues, cooperative safety runtime, step-age validation, receive-clock freshness, six-state EKF, Pure Pursuit, and PI speed control | `include/navbench`, `src`, native tests |
 | CIL and faults | Step-driven Protocol v1 loop with a host guard that replaces stale/missing controller commands with bounded safe stop | `cil.py`, `cil_faults.yaml`, CIL tests |
 | Metrics and campaign | Estimation/tracking/final-stop and cumulative NIS summaries, dashboards, three-mode campaign, missing-run inspection | `metrics.py`, `campaign.py`, tests |
+| Embedded HMI | Navigation-independent non-blocking state presenter, 2 Hz bounded SSD1306 adapter, LED patterns, optional configured buttons/buzzer/user LED, physically gated disabled-by-default SG90 | `hmi.hpp`, `arduino_hmi.hpp`, HMI native tests |
+| Automation and CI | One software-only verification command plus read-only GitHub Actions build/test gate | `tools/verify.py`, `.github/workflows/software-verification.yml` |
 
 The Python reference EKF exists only as a numerical oracle for fixtures. It is
 not on the controller-in-the-loop control path.
 
 ## Acceptance checklist
 
-An item marked **host gate** has automated coverage but still depends on the
-final validation command passing on the selected toolchain. No item below
-claims a physical measurement unless explicitly labelled as a hardware gate.
+`Software verified` means the final computer/native gate passed in this
+worktree. No item below claims a physical measurement unless explicitly
+labelled as a hardware gate.
 
 | Requirement | Status | Remaining gate |
 |---|---|---|
-| Repeated scenario/seed determinism | Host gate | Run deterministic scenario and replay regression |
-| Python/C++ Protocol v1 conformance and 1,000-frame soak | Host gate | Run Python suite and native protocol executable |
-| Six-state EKF Jacobians, covariance health, NIS gating, and cross-language fixture parity | Host gate | Run Python suite with fixture-runner environment variable |
-| Route following, PI speed control, limits, final stop, and safety transitions | Host gate | Run native tests and closed-loop smoke scenarios |
-| Bidirectional communication, stale-command, and sensor fault behavior | Host gate | Run fault smoke scenarios and inspect counters/states |
-| Campaign completeness and three-mode aggregation | Host gate | Review the generated 20-seed aggregate against the frozen PRD comparison target |
+| Repeated scenario/seed determinism | Software verified | Deterministic scenario and typed native replay passed |
+| Python/C++ Protocol v1 conformance and 1,000-frame soak | Software verified | Shared golden/rejection vectors and soak passed |
+| Six-state EKF Jacobians, covariance health, NIS gating, and cross-language fixture parity | Software verified | Python/native suites and parity fixture passed |
+| Route following, PI speed control, limits, final stop, and safety transitions | Software verified | Native and four-scenario closed-loop gates passed |
+| Bidirectional communication, stale-command, and sensor fault behavior | Software verified | Fault and safety regression gates passed |
+| Campaign completeness and three-mode aggregation | Software verified | 20 seeds × 3 modes completed and acceptance passed in the final local run |
 | UNO R4 firmware compilation | Build gate | Run a clean `uno_r4_wifi` PlatformIO build |
 | Real Protocol v1 handshake and sustained CIL over USB serial | Hardware gate | Upload, open the selected device explicitly, and execute a bounded smoke run |
 | Actual serial round-trip timing and loop timing | Hardware gate | Measure on the board; native-process timing is not a substitute |
 | Static flash/global RAM footprint | Build gate | Record the linker/build memory report for the final image |
 | Runtime stack high-water and actual memory margin | Hardware gate | Measure on the board under a sustained bounded session |
-| OLED/buttons/buzzer/servo behavior | Outside current software qualification | Define wiring/HAL mappings and qualify separately |
+| HMI logical behavior and mock HAL | Software verified | Native mock-HAL test passed |
+| SSD1306 at `0x3C` and built-in LED | Hardware gate | Build/upload and observe on the board |
+| Buttons/buzzer/user LED/SG90 | Hardware gate | Define explicit board macros, qualify wiring/polarity; externally power SG90 with common ground before enabling |
 
 ## Known limitations
 
@@ -56,6 +60,8 @@ claims a physical measurement unless explicitly labelled as a hardware gate.
   driver behavior, electrical connections, or real serial reconnect behavior.
 - `FirmwareSession` currently advances its software self-test to passed during
   reset; it does not qualify board peripherals or electrical health.
+- OLED communication failure is isolated from navigation/control and remains a
+  physical HMI diagnostic; it does not silently assert controller readiness.
 - `commands` in scenario YAML drives open-loop simulation only. Closed-loop
   simulation applies controller commands returned by the C++ firmware path.
 - CIL smoke thresholds are regression gates, not a claim of real vehicle or

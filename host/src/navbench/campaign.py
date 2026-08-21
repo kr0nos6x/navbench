@@ -211,6 +211,7 @@ def run_campaign(
             "complete"
             if not failed and not missing and not artifact_missing
             and not artifact_incomplete and not artifact_invalid
+            and acceptance_passed
             else "failed"
         ),
         "expected_runs": len(expected_names),

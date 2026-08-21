@@ -123,9 +123,15 @@ navigation after its grace period, queue overflow, or a latched manual request
 causes SAFE_STOP. A numerical estimator failure causes FAULT. Safe-stop and
 fault outputs request zero steering/target speed and bounded braking.
 
-The board entry point performs bounded non-blocking serial reads/writes and a
-non-blocking built-in LED heartbeat. Board-specific OLED, button, buzzer, and
-servo pin mappings are intentionally outside the controller core. The current
+The board entry point performs bounded non-blocking serial reads/writes and
+passes logical safety/navigation status to `HmiController`. The HMI core uses a
+fixed callback table and has no estimator, guidance, or controller dependency.
+It schedules bounded LED/buzzer/servo outputs without delay and limits OLED
+refresh to 2 Hz. The board adapter drives the verified SSD1306-class display at
+I2C address `0x3C` without a framebuffer. Built-in LED is enabled; user LED,
+buttons, buzzer, and SG90 require explicit compile-time pin/polarity settings.
+SG90 output is disabled by default and compilation requires an explicit
+physical-power/common-ground qualification flag before it can be enabled. The
 firmware session completes its software self-test during reset; it does not
 perform or claim a peripheral/electrical self-test.
 
@@ -146,8 +152,9 @@ durations are intentionally not byte-deterministic.
 ## Qualification boundary
 
 Native CIL exercises the actual C++ protocol, firmware session, EKF, guidance,
-control, and safety sources, but it does not measure UNO R4 execution time,
-USB-serial latency, runtime stack high-water, electrical behavior, or physical HMI.
+control, safety, and logical HMI sources, but it does not measure UNO R4
+execution time, USB-serial latency, runtime stack high-water, electrical
+behavior, or physical HMI behavior.
 The first hardware gate is a clean firmware build followed by an explicit upload
 and a bounded Protocol v1 HELLO/route/sensor/safe-stop exchange on a user-selected
 serial device.

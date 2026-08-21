@@ -137,6 +137,7 @@ void FirmwareSession::reset(uint32_t now_ms) {
   have_sensor_time_ = false;
   have_sensor_ = false;
   scheduled_task_mask_ = 0U;
+  last_steering_command_rad_ = 0.0F;
 }
 
 void FirmwareSession::packet_callback(const wire::Packet& packet,
@@ -602,6 +603,7 @@ void FirmwareSession::emit_controller_output(
                      : (effective.command.valid ? wire::ControlMode::Tracking
                                                 : wire::ControlMode::Neutral);
   command.flags = effective.command.route_complete ? 1U : 0U;
+  last_steering_command_rad_ = effective.command.steering_rad;
   (void)emit_payload(wire::MessageType::ControlCommand, step_id, command);
 
   wire::StateEstimatePayload estimate{};

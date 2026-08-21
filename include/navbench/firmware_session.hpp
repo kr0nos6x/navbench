@@ -61,6 +61,7 @@ class FirmwareSession {
   std::size_t pending_sensor_frames() const { return sensor_queue_.size(); }
   uint32_t last_step_id() const { return last_step_id_; }
   bool session_active() const { return session_active_; }
+  float last_steering_command_rad() const { return last_steering_command_rad_; }
 
   // Board main records actual loop duration without coupling the core to a
   // clock/HAL. Native tests may leave it at zero.
@@ -147,6 +148,7 @@ class FirmwareSession {
   bool have_sensor_time_{false};
   bool have_sensor_{false};
   uint8_t scheduled_task_mask_{0U};
+  float last_steering_command_rad_{0.0F};
 };
 
 }  // namespace navbench

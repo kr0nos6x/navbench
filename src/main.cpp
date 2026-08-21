@@ -1,11 +1,11 @@
 #include <Arduino.h>
 
+#include "navbench/arduino_hmi.hpp"
 #include "navbench/firmware_session.hpp"
 
 namespace {
 
 constexpr unsigned long kSerialBaud = 115200UL;
-constexpr uint32_t kLedHeartbeatPeriodMs = 1000U;
 constexpr size_t kMaximumRxBytesPerLoop = 64U;
 constexpr size_t kMaximumTxBytesPerLoop = 32U;
 
@@ -22,8 +22,9 @@ enum class DiagnosticEvent : uint16_t {
 #endif
 
 navbench::FirmwareSession firmwareSession;
-uint32_t lastLedHeartbeatMs = 0U;
-bool ledOn = false;
+navbench::ArduinoHmiHal boardHmi;
+navbench::HmiController hmi;
+navbench::HmiHal hmiHal;
 uint8_t pendingTx[navbench::protocol::kMaxWireFrameSize]{};
 size_t pendingTxSize = 0U;
 size_t pendingTxOffset = 0U;
@@ -161,15 +162,52 @@ void transmitSerial(uint32_t nowMs) {
 #endif
 }
 
+navbench::HmiState hmiState(navbench::SafetyState state) {
+  switch (state) {
+    case navbench::SafetyState::Startup:
+    case navbench::SafetyState::SelfTest:
+      return navbench::HmiState::Boot;
+    case navbench::SafetyState::Ready:
+      return navbench::HmiState::Ready;
+    case navbench::SafetyState::Running:
+      return navbench::HmiState::Running;
+    case navbench::SafetyState::Degraded:
+      return navbench::HmiState::Degraded;
+    case navbench::SafetyState::SafeStop:
+      return navbench::HmiState::SafeStop;
+    case navbench::SafetyState::Fault:
+      return navbench::HmiState::Fault;
+  }
+  return navbench::HmiState::Fault;
+}
+
+void updateHmi(uint32_t nowMs) {
+  navbench::HmiStatus status{};
+  status.state = hmiState(firmwareSession.core().runtime().state());
+  status.navigation_mode = static_cast<uint8_t>(
+      firmwareSession.core().estimator().navigation_mode(nowMs));
+  status.host_connected = firmwareSession.session_active();
+  status.estimator_healthy = firmwareSession.core().estimator().healthy();
+  const float maximumSteering =
+      firmwareSession.core().controller().config().maximum_steering_rad;
+  status.steering_normalized = maximumSteering > 0.0F
+      ? firmwareSession.last_steering_command_rad() / maximumSteering : 0.0F;
+  hmi.update(nowMs, status, hmiHal);
+}
+
 }  // namespace
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  boardHmi.begin();
+  hmiHal = boardHmi.callbacks();
+  navbench::HmiConfig hmiConfig = navbench::HmiConfig::defaults();
+  hmiConfig.buzzer_enabled = NAVBENCH_HMI_BUZZER_ENABLED != 0;
+  hmiConfig.servo_enabled = NAVBENCH_HMI_SERVO_ENABLED != 0;
+  (void)hmi.set_config(hmiConfig);
+  hmi.begin(millis(), hmiHal);
   Serial.begin(kSerialBaud);
   const uint32_t nowMs = millis();
   firmwareSession.reset(nowMs);
-  lastLedHeartbeatMs = nowMs;
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
   lastDiagnosticMs = nowMs - kDiagnosticPeriodMs;
 #endif
@@ -182,12 +220,7 @@ void loop() {
   receiveSerial(nowMs);
   firmwareSession.tick(nowMs, firmwareSession.last_step_id());
   transmitSerial(nowMs);
-
-  if (nowMs - lastLedHeartbeatMs >= kLedHeartbeatPeriodMs) {
-    lastLedHeartbeatMs = nowMs;
-    ledOn = !ledOn;
-    digitalWrite(LED_BUILTIN, ledOn ? HIGH : LOW);
-  }
+  updateHmi(nowMs);
 
   firmwareSession.record_loop_duration(micros() - loopStartUs);
 }

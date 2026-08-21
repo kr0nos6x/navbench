@@ -111,7 +111,7 @@ def _scenario_argument(parser: argparse.ArgumentParser, default: str) -> None:
     parser.add_argument("--scenario", type=Path, default=Path(default))
 
 
-def _open_loop(arguments: argparse.Namespace) -> None:
+def _open_loop(arguments: argparse.Namespace) -> int:
     scenario = load_scenario(arguments.scenario)
     with RunLogger(
         arguments.output_root,
@@ -173,9 +173,10 @@ def _open_loop(arguments: argparse.Namespace) -> None:
             sort_keys=True,
         )
     )
+    return 0
 
 
-def _cil(arguments: argparse.Namespace) -> None:
+def _cil(arguments: argparse.Namespace) -> int:
     scenario = load_scenario(arguments.scenario)
     result = run_closed_loop(
         scenario,
@@ -185,9 +186,10 @@ def _cil(arguments: argparse.Namespace) -> None:
         create_dashboard=not arguments.no_dashboard,
     )
     print(json.dumps(result.summary, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if result.metric_summary.success else 1
 
 
-def _campaign(arguments: argparse.Namespace) -> None:
+def _campaign(arguments: argparse.Namespace) -> int:
     result = run_campaign(
         load_scenario(arguments.scenario),
         native_executable=arguments.native,
@@ -198,9 +200,10 @@ def _campaign(arguments: argparse.Namespace) -> None:
     )
     inspected = inspect_campaign(result.path)
     print(json.dumps(inspected, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if bool(inspected.get("acceptance_passed")) else 1
 
 
-def _replay(arguments: argparse.Namespace) -> None:
+def _replay(arguments: argparse.Namespace) -> int:
     replay = RunReplay(arguments.run, allow_incomplete=arguments.allow_incomplete)
     counts = {
         "ground_truth": sum(1 for _ in replay.ground_truth()),
@@ -216,23 +219,22 @@ def _replay(arguments: argparse.Namespace) -> None:
         "records_replayed": counts,
         "summary": replay.summary(),
     }
+    deterministic_match = True
     if arguments.native is not None:
-        result["native_controller_replay"] = replay_native_run(
+        native_result = replay_native_run(
             replay,
             native_executable=arguments.native,
-        ).to_dict()
-    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
-
-
-def _inspect_campaign(arguments: argparse.Namespace) -> None:
-    print(
-        json.dumps(
-            inspect_campaign(arguments.campaign),
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
         )
-    )
+        result["native_controller_replay"] = native_result.to_dict()
+        deterministic_match = native_result.deterministic_match
+    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if replay.is_complete and deterministic_match else 1
+
+
+def _inspect_campaign(arguments: argparse.Namespace) -> int:
+    result = inspect_campaign(arguments.campaign)
+    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if bool(result.get("acceptance_passed")) else 1
 
 
 def _hardware(arguments: argparse.Namespace) -> int:
