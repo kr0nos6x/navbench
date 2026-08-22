@@ -160,7 +160,7 @@ speed bound and slowdown ramp, latches zero target speed inside its acceptance
 region, and completes only when position and speed tolerances are both met.
 Guidance and control use only the EKF estimate and route reference.
 
-## Known estimator limitation
+## Sensor timestamp policy
 
 Sensor latency is represented correctly at the host and on the wire: every
 measurement carries its original sample step and timestamp. Firmware first
@@ -169,8 +169,6 @@ future/excessively old samples. For accepted input, EKF navigation freshness is
 measured from controller receive time, avoiding comparison between the source
 clock/32-bit wire timestamp and board `millis()`.
 
-The v1 EKF does not keep a state history or rewind/repropagate for an
-out-of-sequence measurement. An accepted delayed GNSS or landmark observation is
-therefore applied to the current state. Scenario latency must remain within the
-configured step-age envelope, and hardware latency requires separate
-measurement.
+The v1 EKF applies an accepted delayed GNSS or landmark observation to the
+current state rather than maintaining a state-history rewind/repropagation
+path. Scenario latency remains bounded by the configured step-age envelope.

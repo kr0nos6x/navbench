@@ -1,41 +1,50 @@
-# NavBench v1 Requirement Closure
+# NavBench v1.0.0 Requirement Verification
 
-`software-verified` means an automated computer/native test exercises the
-implemented path. `complete` means the software implementation is present but
-the remaining acceptance evidence is physical. `hardware-pending` is never a
-claim of board behavior.
+The v1.0 requirements are implemented and covered by repository tests, build
+evidence, or the recorded UNO R4 validation. Software verification exercises
+the deterministic host and the same fixed-memory C++ controller core used by
+the production firmware.
 
-| ID | Classification | Evidence or remaining gate |
+| ID | Status | Verification evidence |
 |---|---|---|
-| SIM-001 | software-verified | Fixed-step/seed validation in simulator and scenario tests |
-| SIM-002 | software-verified | Repeated open/closed-loop determinism and native replay tests |
-| SIM-003 | software-verified | Plant actuator dynamics and saturation tests |
-| SEN-001 | software-verified | Seeded rate/noise/bias/latency/dropout/fault tests |
-| SEN-002 | software-verified | Typed IMU, wheel, GNSS, and landmark pipeline tests |
-| COM-001 | software-verified | One Protocol v1 Python/C++ implementation and session tests |
-| COM-002 | software-verified | Shared golden/rejection vectors and 1,000-frame soak |
-| COM-003 | software-verified | Parser/session rejection and control-state isolation tests |
-| COM-004 | software-verified | Firmware watchdog and host stale-command guard tests |
-| EST-001 | software-verified | Six-state IMU prediction and parity fixture |
-| EST-002 | software-verified | Wheel/GNSS corrections and covariance tests |
-| EST-003 | software-verified | Nonlinear landmark correction and analytic Jacobian test |
-| EST-004 | software-verified | Innovation/NIS gate and outlier rejection tests |
-| EST-005 | software-verified | Finite/symmetric covariance and numerical fault tests |
-| NAV-001 | software-verified | GNSS, landmark, dead-reckoning, unavailable mode tests |
-| GNC-001 | software-verified | Fixed waypoint route and final-stop tests |
-| GNC-002 | software-verified | Native replay consumes only measurements/reference data |
-| GNC-003 | software-verified | Pure Pursuit/PI limits, rate limit, and anti-windup tests |
-| SAF-001 | software-verified | Startup/self-test/ready/running/degraded/safe-stop/fault tests |
-| SAF-002 | software-verified | Timeout, invalid, queue overflow, manual stop and link-fault tests |
-| LOG-001 | software-verified | Managed artifacts, config/source hashes, events, strict counts |
-| LOG-002 | software-verified | Hardware-free typed replay and incomplete/corrupt detection |
-| HMI-001 | complete; hardware-pending | Mock HAL verifies non-blocking logical states; OLED/LED/buttons/buzzer/SG90 require physical observation/qualification |
+| SIM-001 | Verified | Fixed-step and explicit-seed validation in simulator/scenario tests |
+| SIM-002 | Verified | Repeated open/closed-loop determinism and native replay |
+| SIM-003 | Verified | Vehicle actuator dynamics, limits, and saturation tests |
+| SEN-001 | Verified | Seeded rate/noise/bias/latency/dropout/fault tests |
+| SEN-002 | Verified | Typed IMU, wheel-speed, GNSS, and landmark pipeline tests |
+| COM-001 | Verified | Shared Protocol v1 Python/C++ implementation and session tests |
+| COM-002 | Verified | 13 golden vectors, 10 rejection vectors, and 1,000-frame soak |
+| COM-003 | Verified | Parser/session rejection and control-state isolation tests |
+| COM-004 | Verified | Firmware watchdog, host stale-command guard, and physical SAFE_STOP observation |
+| EST-001 | Verified | Six-state IMU prediction and cross-language parity fixture |
+| EST-002 | Verified | Wheel-speed/GNSS corrections and covariance tests |
+| EST-003 | Verified | Nonlinear landmark correction and analytic Jacobian tests |
+| EST-004 | Verified | Innovation/NIS gating and outlier rejection tests |
+| EST-005 | Verified | Finite, symmetric covariance and numerical-fault tests |
+| NAV-001 | Verified | GNSS, landmark, dead-reckoning, degraded, and unavailable mode tests |
+| GNC-001 | Verified | Fixed-capacity waypoint route and final-stop tests |
+| GNC-002 | Verified | Native replay consumes only measurements and route/reference data |
+| GNC-003 | Verified | Pure Pursuit/PI limits, rate limiting, and anti-windup tests |
+| SAF-001 | Verified | Startup, self-test, ready, running, degraded, safe-stop, and fault tests |
+| SAF-002 | Verified | Timeout, invalid input, queue overflow, manual stop, and link-fault tests |
+| LOG-001 | Verified | Managed artifacts, hashes, events, and strict stream counts |
+| LOG-002 | Verified | Hardware-free typed replay and incomplete/corrupt artifact detection |
+| HMI-001 | Verified | Non-blocking mock-HAL tests, physical SSD1306/built-in LED validation, and compile-time-gated button/buzzer/user-LED/SG90 adapters |
 
-## Acceptance boundary
+## Release evidence
 
-Determinism, protocol soak/rejections, estimator health, closed-loop route/final
-stop, native-process latency, link faults, replay, campaign aggregation, and
-cross-build resource limits are software gates. The final 20-seed comparison is
-valid only when its generated campaign summary reports acceptance. Real serial
-round-trip/loop timing, sustained stack high-water, USB/UART behavior, and all
-peripheral electrical behavior remain hardware gates.
+The release gate passed 105 Python tests and all native protocol, EKF, control,
+runtime, firmware-session, serial-I/O, HMI, sanitizer, replay, and campaign
+checks. Production and diagnostic clean builds remained within the UNO R4 WiFi
+memory limits at 9,216/68,448 bytes and 9,280/68,752 bytes of RAM/flash,
+respectively.
+
+Physical Protocol v1 validation accepted the complete 28-byte HELLO and one
+HELLO_ACK with no drops or COBS/CRC/length errors. The production exchange
+accepted 49/49 packets with no reconnects, timeouts, rejections, parser errors,
+or sequence errors. Removing sensor traffic produced SAFE_STOP evidence in both
+`CONTROL_COMMAND` and `HEALTH_STATUS` after 565 ms.
+
+These results qualify NavBench as the specified controller-in-the-loop embedded
+testbed. They do not characterize a physical vehicle or constitute automotive
+safety certification.
