@@ -244,20 +244,22 @@ def validate_serial_diagnostic(
     parser = StreamParser()
     status = _DiagnosticStatus()
     deadline = clock() + _DIAGNOSTIC_DEADLINE_S
-    while clock() <= deadline and not status.tx_proven:
+    while clock() <= deadline and not status.beacon_seen:
         _poll_diagnostic(transport, parser, status)
         sleep(_POLL_PERIOD_S)
-    if not status.beacon_seen or not status.tx_proven:
+    if not status.beacon_seen:
         return _diagnostic_failure(
             config,
             mode,
-            "diagnostic beacon/TX proof was not received",
+            "a valid diagnostic beacon was not received",
             parser,
             status,
         )
 
     baseline_rx = status.serial_rx_bytes
     baseline_errors = status.parser_errors
+    baseline_parser_frames = status.parser_frames_received
+    baseline_host_errors = _host_parser_error_snapshot(parser)
     if mode == "usb":
         _write_all(
             transport,
@@ -290,22 +292,30 @@ def validate_serial_diagnostic(
     hello_frame = encode_packet(make_packet(MessageType.HELLO, 0, 0, hello))
     _write_all(transport, hello_frame, clock=clock, sleep=sleep)
     deadline = clock() + _DIAGNOSTIC_DEADLINE_S
+    last_error = "HELLO parse result and HELLO_ACK were not both observed"
     while clock() <= deadline:
         _poll_diagnostic(transport, parser, status)
-        if status.hello_ack is not None and status.hello_result != 0:
+        if status.hello_ack is not None or status.hello_result != 0:
             error = _diagnostic_hello_error(
                 status.hello_ack,
                 status,
                 minimum_rx=baseline_rx + len(hello_frame),
+                minimum_parser_frames=baseline_parser_frames + 1,
             )
-            if error is None:
+            if _host_parser_error_snapshot(parser) != baseline_host_errors:
+                last_error = (
+                    "host parser observed a new invalid frame during the "
+                    "HELLO exchange"
+                )
+            elif error is None:
                 return _diagnostic_success(config, mode, parser, status)
-            return _diagnostic_failure(config, mode, error, parser, status)
+            else:
+                last_error = error
         sleep(_POLL_PERIOD_S)
     return _diagnostic_failure(
         config,
         mode,
-        "HELLO parse result and HELLO_ACK were not both observed",
+        last_error,
         parser,
         status,
     )
@@ -315,6 +325,7 @@ def validate_serial_diagnostic(
 class _DiagnosticStatus:
     beacon_seen: bool = False
     tx_proven: bool = False
+    write_diagnostic_seen: bool = False
     uptime_ms: int = 0
     serial_rx_bytes: int = 0
     parser_frames_received: int = 0
@@ -362,6 +373,7 @@ class _DiagnosticStatus:
         return {
             "beacon_seen": self.beacon_seen,
             "tx_proven": self.tx_proven,
+            "write_diagnostic_seen": self.write_diagnostic_seen,
             "uptime_ms": self.uptime_ms,
             "serial_rx_bytes": self.serial_rx_bytes,
             "parser_frames_received": self.parser_frames_received,
@@ -421,28 +433,46 @@ def _poll_diagnostic(
             status.diagnostic_frames += 1
             if payload.detail == 1 and payload.related_sequence == _DIAGNOSTIC_MAGIC:
                 status.beacon_seen = True
+                # A frame that passed Protocol v1 COBS, CRC, length, type and
+                # payload validation is direct proof of firmware-to-host TX.
+                # Its payload cannot report the write that is still in flight.
+                status.tx_proven = True
                 status.uptime_ms = payload.context
             elif payload.detail == 2:
-                status.serial_rx_bytes = payload.related_sequence
-                status.parser_frames_received = payload.context
+                status.serial_rx_bytes = max(
+                    status.serial_rx_bytes, payload.related_sequence
+                )
+                status.parser_frames_received = max(
+                    status.parser_frames_received, payload.context
+                )
             elif payload.detail == 3:
-                status.hello_result = (payload.related_sequence >> 24) & 0xFF
-                status.parser_status = (payload.related_sequence >> 16) & 0xFF
-                status.hello_packets = payload.related_sequence & 0xFFFF
-                status.parser_errors = payload.context
+                hello_packets = payload.related_sequence & 0xFFFF
+                if hello_packets >= status.hello_packets:
+                    status.hello_result = (
+                        payload.related_sequence >> 24
+                    ) & 0xFF
+                    status.parser_status = (
+                        payload.related_sequence >> 16
+                    ) & 0xFF
+                    status.hello_packets = hello_packets
+                    status.parser_errors = max(
+                        status.parser_errors, payload.context
+                    )
             elif payload.detail == 4:
+                status.write_diagnostic_seen = True
                 status.last_write_requested = (
                     payload.related_sequence >> 16
                 ) & 0xFFFF
                 status.last_write_result = payload.related_sequence & 0xFFFF
-                status.serial_tx_bytes = payload.context
-                status.tx_proven = (
-                    status.last_write_requested > 0
-                    and status.last_write_result == status.last_write_requested
-                )
+                status.serial_tx_bytes = max(status.serial_tx_bytes, payload.context)
             elif payload.detail == 5:
-                status.response_frames_created = payload.related_sequence
-                status.response_frames_dropped = (payload.context >> 16) & 0xFFFF
+                status.response_frames_created = max(
+                    status.response_frames_created, payload.related_sequence
+                )
+                status.response_frames_dropped = max(
+                    status.response_frames_dropped,
+                    (payload.context >> 16) & 0xFFFF,
+                )
                 status.response_frames_pending = payload.context & 0xFFFF
 
 
@@ -468,17 +498,36 @@ def _write_all(
 
 
 def _diagnostic_hello_error(
-    ack: HelloAckPayload,
+    ack: HelloAckPayload | None,
     status: _DiagnosticStatus,
     *,
     minimum_rx: int,
+    minimum_parser_frames: int,
 ) -> str | None:
     if status.serial_rx_bytes < minimum_rx:
         return "firmware RX counter did not include the complete HELLO frame"
     if status.hello_result != 1 or status.parser_status != 0:
         return "firmware diagnostic did not report an accepted HELLO"
-    if status.response_frames_created == 0:
-        return "firmware did not report creating a HELLO response"
+    if status.hello_packets != 1:
+        return "firmware diagnostic did not report exactly one HELLO packet"
+    if status.parser_frames_received < minimum_parser_frames:
+        return "firmware parser did not report accepting the HELLO frame"
+    if status.response_frames_created != 1:
+        return "firmware did not report exactly one HELLO response"
+    if status.response_frames_dropped != 0:
+        return "firmware dropped a HELLO response frame"
+    if status.response_frames_pending != 0:
+        return "firmware HELLO response remained pending"
+    if status.write_diagnostic_seen and (
+        status.last_write_requested != 0 or status.last_write_result != 0
+    ):
+        if (
+            status.last_write_requested == 0
+            or status.last_write_result != status.last_write_requested
+        ):
+            return "firmware reported an incomplete serial write"
+    if ack is None:
+        return "HELLO_ACK was not observed"
     if not (
         ack.status is HelloStatus.OK
         and ack.accepted_version == PROTOCOL_VERSION
@@ -489,6 +538,20 @@ def _diagnostic_hello_error(
     ):
         return "HELLO_ACK fields are incompatible with the host"
     return None
+
+
+def _host_parser_error_snapshot(parser: StreamParser) -> tuple[int, ...]:
+    stats = parser.stats
+    return (
+        stats.cobs_errors,
+        stats.crc_errors,
+        stats.version_errors,
+        stats.type_errors,
+        stats.length_errors,
+        stats.oversized_frames,
+        stats.truncated_frames,
+        stats.other_errors,
+    )
 
 
 def _diagnostic_success(

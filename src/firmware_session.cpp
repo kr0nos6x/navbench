@@ -168,6 +168,12 @@ void FirmwareSession::feed(uint32_t now_ms, const uint8_t* data,
 void FirmwareSession::tick(uint32_t now_ms, uint32_t step_id) {
   current_now_ms_ = now_ms;
   last_step_id_ = step_id;
+  // Protocol v1 is session-gated: before HELLO is accepted there is no valid
+  // controller sequence space and therefore no unsolicited telemetry. This
+  // also guarantees that the first frame after an input flush can be ACK(0).
+  if (!session_active_) {
+    return;
+  }
   const ScheduleDecision schedule = core_.runtime().scheduler().poll(now_ms);
   const bool control_due =
       schedule.due[static_cast<std::size_t>(RuntimeTask::Control)];
