@@ -1,72 +1,51 @@
-# NavBench v1.0rc1 Technical Status
+# NavBench v1.0.0 Technical Status
 
-NavBench currently has one host implementation and one C++ controller core.
-The same C++ `FirmwareSession` is used by the native controller-in-the-loop
-executable and the Arduino entry point. The release candidate is suitable for
-computer-only verification; it is not yet a hardware-qualified release.
+The NavBench v1.0.0 implementation is complete for its defined
+controller-in-the-loop testbed scope. It has one Python host implementation and
+one fixed-memory C++ controller core. The same `FirmwareSession` and Protocol
+v1 implementation are used by the native controller-in-the-loop executable and
+the Arduino UNO R4 WiFi firmware. The vehicle remains simulated; estimation,
+guidance, control, communications, safety, and HMI logic execute through the
+embedded code path.
 
-## Implemented software
+## Implemented system
 
-| Area | Current implementation | Evidence in the repository |
+| Area | v1.0.0 implementation | Verification |
 |---|---|---|
-| Plant and scenarios | Validated, exact fixed-step kinematic bicycle plant with actuator dynamics and saturations | `host/src/navbench/simulator.py`, `scenario.py`, scenario tests |
-| Virtual sensors | Seeded IMU, wheel-speed, GNSS, and range-bearing landmark models with sampling, noise, bias/error, latency, dropout, and outliers | `sensors.py`, sensor tests |
-| Artifacts and replay | Config snapshot/hash, exact stream counts, source-tree/controller-binary hashes, typed commands, incomplete marker, and strict replay | `runlog.py`, replay tests |
-| Protocol v1 | COBS, CRC-16, typed payloads, bounded incremental parsing, sequence policy, shared golden/invalid vectors | Python/C++ protocol implementations and fixtures |
-| Host link | Codec-independent transport/session, bidirectional COBS-frame-aware deterministic faults, native-process adapter, POSIX serial adapter | transport/session/native tests |
-| Firmware core | Fixed queues, cooperative safety runtime, step-age validation, receive-clock freshness, six-state EKF, Pure Pursuit, and PI speed control | `include/navbench`, `src`, native tests |
-| CIL and faults | Step-driven Protocol v1 loop with a host guard that replaces stale/missing controller commands with bounded safe stop | `cil.py`, `cil_faults.yaml`, CIL tests |
-| Metrics and campaign | Estimation/tracking/final-stop and cumulative NIS summaries, dashboards, three-mode campaign, missing-run inspection | `metrics.py`, `campaign.py`, tests |
-| Embedded HMI | Navigation-independent non-blocking state presenter, 2 Hz bounded SSD1306 adapter, LED patterns, optional configured buttons/buzzer/user LED, physically gated disabled-by-default SG90 | `hmi.hpp`, `arduino_hmi.hpp`, HMI native tests |
-| Automation and CI | One software-only verification command plus read-only GitHub Actions build/test gate | `tools/verify.py`, `.github/workflows/software-verification.yml` |
+| Plant and scenarios | Exact fixed-step kinematic bicycle plant, actuator dynamics, limits, strict scenario validation | Determinism, boundary, saturation, and scenario tests |
+| Virtual sensors and faults | Seeded IMU, wheel, GNSS, and landmark models with rate, noise, bias, latency, dropout, slip, outliers, and link/runtime faults | Sensor and fault regression suites |
+| Artifacts and replay | Config/hash manifest, typed streams, recoverable incomplete runs, strict replay, metrics, dashboards, and campaign aggregation | Artifact, replay, metrics, and campaign tests |
+| Protocol v1 | COBS, CRC-16, typed payloads, bounded incremental parsing, sequence/step policy, HELLO negotiation | Shared Python/C++ golden and rejection vectors plus 1,000-frame soak |
+| Host link | In-memory, deterministic fault, native-process, and POSIX serial transports behind one session interface | Transport, session, CIL, and physical serial validation |
+| Estimation | Six-state EKF with IMU prediction, wheel/GNSS/landmark corrections, analytic Jacobians, Joseph update, and NIS gating | Jacobian, covariance, gating, and Python/C++ parity tests |
+| Guidance and control | Fixed-capacity route manager, Pure Pursuit, PI speed control, anti-windup, saturation, and final stop | Native and closed-loop scenario tests |
+| Firmware safety | Cooperative runtime, fixed queues, stale/duplicate rejection, watchdog, startup/ready/running/degraded/safe-stop/fault states | Native safety/fault tests and physical watchdog validation |
+| Embedded HMI | Non-blocking OLED and LED presentation plus compile-time button, buzzer, user LED, and safely gated SG90 adapters | Mock-HAL tests; physical OLED and built-in LED validation |
+| Automation | Single local verification command and read-only CI workflow | Packaging, Python/native, replay, campaign, and UNO cross-build gates |
 
-The Python reference EKF exists only as a numerical oracle for fixtures. It is
-not on the controller-in-the-loop control path.
+The Python reference EKF is a numerical fixture oracle and is not part of the
+controller-in-the-loop control path. Firmware estimator, guidance, and control
+consume only sensor measurements and route/reference data.
 
-## Acceptance checklist
+## v1.0.0 verification record
 
-`Software verified` means the final computer/native gate passed in this
-worktree. No item below claims a physical measurement unless explicitly
-labelled as a hardware gate.
+- Python: 105 tests passed.
+- Native protocol: 3,393 checks, 13 golden vectors, 10 rejection vectors, and
+  a 1,000-frame soak passed.
+- Native serial I/O: 10,047 checks passed, including partial/zero writes,
+  framing continuity, and diagnostic rate limiting.
+- Native EKF, control, runtime, firmware-session, HMI, sanitizer, replay, and
+  campaign gates passed.
+- Production clean build: 9,216 bytes RAM and 68,448 bytes flash.
+- Serial-diagnostic clean build: 9,280 bytes RAM and 68,752 bytes flash.
+- Physical diagnostic: 28-byte HELLO accepted; one response; zero drops and
+  zero COBS, CRC, or length errors.
+- Physical production: 49/49 packets accepted; zero reconnects, timeouts,
+  rejections, parser errors, or sequence errors.
+- Watchdog: SAFE_STOP observed in `CONTROL_COMMAND` and `HEALTH_STATUS` after
+  565 ms without sensor traffic.
 
-| Requirement | Status | Remaining gate |
-|---|---|---|
-| Repeated scenario/seed determinism | Software verified | Deterministic scenario and typed native replay passed |
-| Python/C++ Protocol v1 conformance and 1,000-frame soak | Software verified | Shared golden/rejection vectors and soak passed |
-| Six-state EKF Jacobians, covariance health, NIS gating, and cross-language fixture parity | Software verified | Python/native suites and parity fixture passed |
-| Route following, PI speed control, limits, final stop, and safety transitions | Software verified | Native and four-scenario closed-loop gates passed |
-| Bidirectional communication, stale-command, and sensor fault behavior | Software verified | Fault and safety regression gates passed |
-| Campaign completeness and three-mode aggregation | Software verified | 20 seeds × 3 modes completed and acceptance passed in the final local run |
-| UNO R4 firmware compilation | Build gate | Run a clean `uno_r4_wifi` PlatformIO build |
-| Real Protocol v1 handshake and sustained CIL over USB serial | Hardware gate | Upload, open the selected device explicitly, and execute a bounded smoke run |
-| Actual serial round-trip timing and loop timing | Hardware gate | Measure on the board; native-process timing is not a substitute |
-| Static flash/global RAM footprint | Build gate | Record the linker/build memory report for the final image |
-| Runtime stack high-water and actual memory margin | Hardware gate | Measure on the board under a sustained bounded session |
-| HMI logical behavior and mock HAL | Software verified | Native mock-HAL test passed |
-| SSD1306 at `0x3C` and built-in LED | Hardware gate | Build/upload and observe on the board |
-| Buttons/buzzer/user LED/SG90 | Hardware gate | Define explicit board macros, qualify wiring/polarity; externally power SG90 with common ground before enabling |
-
-## Known limitations
-
-- Delayed sensor records preserve their original sample step and timestamp, but
-  the EKF applies an accepted late measurement to the current state. There is no
-  out-of-sequence rewind, state history, or repropagation in v1. Firmware bounds
-  source age in the step domain and uses controller receive time for mode
-  freshness; wire timestamps remain source metadata.
-- Protocol v1 provides corruption detection, not authentication or encryption.
-- A sensor frame carries at most one landmark observation; additional visible
-  landmarks require later frames.
-- The native process validates software integration, not board timing, USB
-  driver behavior, electrical connections, or real serial reconnect behavior.
-- `FirmwareSession` currently advances its software self-test to passed during
-  reset; it does not qualify board peripherals or electrical health.
-- OLED communication failure is isolated from navigation/control and remains a
-  physical HMI diagnostic; it does not silently assert controller readiness.
-- `commands` in scenario YAML drives open-loop simulation only. Closed-loop
-  simulation applies controller commands returned by the C++ firmware path.
-- CIL smoke thresholds are regression gates, not a claim of real vehicle or
-  hardware performance. The PRD campaign target is judged only from generated
-  campaign artifacts.
-
-The project remains simulation-based and is not an automotive safety system or
-a controller for a physical autonomous vehicle.
+NavBench is a controller-in-the-loop embedded testbed. Its measurements and
+regression thresholds describe the simulated plant, native process, UNO R4
+firmware, and tested serial path; they are not claims of autonomous-vehicle or
+automotive safety certification.

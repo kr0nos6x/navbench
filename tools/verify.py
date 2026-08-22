@@ -94,6 +94,9 @@ def main() -> int:
     run(["uv", "lock", "--project", "host", "--check"], env=environment)
     run(["uv", "sync", "--project", "host", "--locked"], env=environment)
     distribution = ROOT / "build" / "dist"
+    if distribution.exists():
+        shutil.rmtree(distribution)
+    distribution.mkdir(parents=True)
     run(["uv", "build", "--project", "host", "--out-dir", str(distribution)],
         env=environment)
     wheel = next(distribution.glob("navbench-*.whl"))

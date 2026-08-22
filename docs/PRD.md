@@ -1,8 +1,8 @@
-# NavBench Product Requirements
+# NavBench v1.0.0 Product Requirements
 
 ## 1. Summary
 
-NavBench is a controller-in-the-loop testbed for developing and evaluating embedded navigation and control algorithms under GNSS-aided and GNSS-denied conditions.
+NavBench is a controller-in-the-loop testbed for developing and evaluating embedded navigation and control algorithms under GNSS-aided and GNSS-denied conditions. Version 1.0.0 implements the requirements in this document and is verified by the repository test/build gates and recorded UNO R4 serial validation.
 
 A host computer simulates a ground vehicle and its sensors. An Arduino UNO R4 WiFi receives sensor measurements, estimates the vehicle state, generates control commands, and supervises system safety.
 
@@ -105,17 +105,4 @@ The v1.0 release shall satisfy all of the following:
 - All required unit, integration, replay, and fault tests pass.
 - Final reports can be regenerated from versioned configuration and aggregated result files.
 
-Exact scenario geometry, sensor parameters, control period, and metric thresholds shall be frozen before the corresponding implementation milestone begins.
-
-## 8. Out of Scope
-
-The following are outside the v1.0 scope:
-
-- Physical autonomous driving.
-- UAV navigation or flight control.
-- Automotive-grade or hard-real-time HIL claims.
-- ROS or ROS 2.
-- Camera-based perception.
-- Machine-learning navigation.
-- Wireless control as the primary communication path.
-- Production safety certification.
+Exact scenario geometry, sensor parameters, control period, and metric thresholds are versioned in the validated scenario and campaign configuration. NavBench v1.0.0 evaluates the simulated vehicle through embedded controller hardware; it is not a physical autonomous-driving product or a safety-certification platform.

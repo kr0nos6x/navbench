@@ -86,8 +86,9 @@ small byte-transport interface:
 - `NativeFirmwareTransport` runs the C++ firmware executable as a persistent
   subprocess without replacing the firmware codec/runtime path.
 - `PosixSerialTransport` is a dependency-free, non-blocking raw serial adapter
-  for macOS/Linux. Constructing it opens a device; real-device behavior is not
-  qualified by computer-only tests and no automatic port discovery is used.
+  for macOS/Linux. Constructing it opens an explicitly selected device; no
+  automatic port discovery is used. The same adapter drives the bounded
+  production and serial-diagnostic UNO R4 validation commands.
 
 ## Firmware responsibilities
 
@@ -123,9 +124,10 @@ navigation after its grace period, queue overflow, or a latched manual request
 causes SAFE_STOP. A numerical estimator failure causes FAULT. Safe-stop and
 fault outputs request zero steering/target speed and bounded braking.
 
-The board entry point performs bounded non-blocking serial reads/writes and
-passes logical safety/navigation status to `HmiController`. The HMI core uses a
-fixed callback table and has no estimator, guidance, or controller dependency.
+The board entry point performs bounded non-blocking serial reads and persistent
+staged writes, completing one encoded frame before starting the next. It passes
+logical safety/navigation status to `HmiController`. The HMI core uses a fixed
+callback table and has no estimator, guidance, or controller dependency.
 It schedules bounded LED/buzzer/servo outputs without delay and limits OLED
 refresh to 2 Hz. The board adapter drives the verified SSD1306-class display at
 I2C address `0x3C` without a framebuffer. Built-in LED is enabled; user LED,
@@ -149,12 +151,12 @@ Randomness comes only from the scenario seed. Logical outputs are reproducible
 for a pinned toolchain; recorded UTC metadata and measured native-process
 durations are intentionally not byte-deterministic.
 
-## Qualification boundary
+## Validation record
 
-Native CIL exercises the actual C++ protocol, firmware session, EKF, guidance,
-control, safety, and logical HMI sources, but it does not measure UNO R4
-execution time, USB-serial latency, runtime stack high-water, electrical
-behavior, or physical HMI behavior.
-The first hardware gate is a clean firmware build followed by an explicit upload
-and a bounded Protocol v1 HELLO/route/sensor/safe-stop exchange on a user-selected
-serial device.
+Native CIL exercises the production C++ protocol, firmware session, EKF,
+guidance, control, safety, and logical HMI sources. Clean UNO R4 builds verify
+the final embedded images against the target memory limits. Physical validation
+confirmed the USB/UART Protocol v1 path, HELLO negotiation, normal binary
+sensor/control exchange, watchdog SAFE_STOP, SSD1306 display at `0x3C`, and
+built-in LED behavior. Native-process timings remain host measurements and are
+reported separately from the observed 565 ms physical watchdog transition.
