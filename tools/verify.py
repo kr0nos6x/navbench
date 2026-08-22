@@ -83,6 +83,8 @@ def main() -> int:
                     [*CORE, "test/native/test_firmware_session.cpp"],
                     define="NAVBENCH_SERIAL_DIAGNOSTIC=1")
     compile_and_run(cxx, "test_hmi", ["src/hmi.cpp", "test/native/test_hmi.cpp"])
+    compile_and_run(cxx, "test_serial_io",
+                    [*CORE, "src/serial_io.cpp", "test/native/test_serial_io.cpp"])
     native = compile_and_run(cxx, "navbench_native_firmware",
                              [*CORE, "test/native/native_firmware.cpp"], execute=False)
     ekf_runner = compile_and_run(cxx, "ekf_fixture_runner",

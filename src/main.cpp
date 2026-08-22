@@ -2,6 +2,7 @@
 
 #include "navbench/arduino_hmi.hpp"
 #include "navbench/firmware_session.hpp"
+#include "navbench/serial_io.hpp"
 
 namespace {
 
@@ -10,32 +11,21 @@ constexpr size_t kMaximumRxBytesPerLoop = 64U;
 constexpr size_t kMaximumTxBytesPerLoop = 32U;
 
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
-constexpr uint32_t kDiagnosticPeriodMs = 100U;
 constexpr uint32_t kDiagnosticMagic = 0x4e424447UL;  // "NBDG"
-enum class DiagnosticEvent : uint16_t {
-  Beacon = 1U,
-  Receive = 2U,
-  Parser = 3U,
-  Transmit = 4U,
-  Queue = 5U,
-};
 #endif
 
 navbench::FirmwareSession firmwareSession;
 navbench::ArduinoHmiHal boardHmi;
 navbench::HmiController hmi;
 navbench::HmiHal hmiHal;
-uint8_t pendingTx[navbench::protocol::kMaxWireFrameSize]{};
-size_t pendingTxSize = 0U;
-size_t pendingTxOffset = 0U;
+navbench::SerialRxCounter serialRxCounter;
+navbench::SerialTxStager serialTxStager;
 
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
 uint32_t diagnosticSequence = 0x80000000UL;
-uint32_t lastDiagnosticMs = 0U;
-uint32_t serialTxBytes = 0U;
 uint16_t lastWriteRequested = 0U;
 uint16_t lastWriteResult = 0U;
-uint8_t diagnosticEventIndex = 0U;
+navbench::DiagnosticScheduler diagnosticScheduler;
 #endif
 
 void receiveSerial(uint32_t nowMs) {
@@ -49,53 +39,67 @@ void receiveSerial(uint32_t nowMs) {
     input[count++] = static_cast<uint8_t>(value);
   }
   if (count != 0U) {
+    serialRxCounter.add(count);
     firmwareSession.feed(nowMs, input, count);
   }
 }
 
 bool stageDiagnosticFrame(uint32_t nowMs) {
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
-  if (nowMs - lastDiagnosticMs < kDiagnosticPeriodMs) {
-    return false;
-  }
-  lastDiagnosticMs = nowMs;
-  diagnosticEventIndex = static_cast<uint8_t>((diagnosticEventIndex % 5U) + 1U);
-
+  navbench::DiagnosticSnapshot snapshot{};
   const navbench::protocol::ParserStats& parser =
       firmwareSession.parser_stats();
   const navbench::FirmwareSessionStats& session = firmwareSession.stats();
+  snapshot.serial_rx_bytes = serialRxCounter.bytes();
+  snapshot.parser_frames_received = parser.frames_received;
+  snapshot.parser_errors = parser.cobs_errors + parser.crc_errors +
+                           parser.version_errors + parser.type_errors +
+                           parser.length_errors + parser.other_errors;
+  snapshot.hello_packets = session.diagnostic_hello_packets;
+  snapshot.response_frames_created = session.tx_frames;
+  snapshot.response_frames_dropped = session.tx_dropped;
+  snapshot.response_frames_pending = static_cast<uint16_t>(
+      firmwareSession.pending_frames() & 0xffffU);
+  snapshot.last_write_requested = lastWriteRequested;
+  snapshot.last_write_result = lastWriteResult;
+  snapshot.parser_status = session.diagnostic_last_parser_status;
+  snapshot.hello_result = session.diagnostic_last_hello_result;
+
+  navbench::DiagnosticEvent event = navbench::DiagnosticEvent::Beacon;
+  if (!diagnosticScheduler.next(nowMs, snapshot, &event)) {
+    return false;
+  }
+
   navbench::protocol::ErrorPayload diagnostic{};
   diagnostic.code = navbench::protocol::ApplicationErrorCode::Diagnostic;
-  diagnostic.detail = diagnosticEventIndex;
-  switch (static_cast<DiagnosticEvent>(diagnosticEventIndex)) {
-    case DiagnosticEvent::Beacon:
+  diagnostic.detail = static_cast<uint16_t>(event);
+  switch (event) {
+    case navbench::DiagnosticEvent::Beacon:
       diagnostic.related_sequence = kDiagnosticMagic;
       diagnostic.context = nowMs;
       break;
-    case DiagnosticEvent::Receive:
-      diagnostic.related_sequence = parser.bytes_received;
-      diagnostic.context = parser.frames_received;
+    case navbench::DiagnosticEvent::Receive:
+      diagnostic.related_sequence = snapshot.serial_rx_bytes;
+      diagnostic.context = snapshot.parser_frames_received;
       break;
-    case DiagnosticEvent::Parser:
+    case navbench::DiagnosticEvent::Parser:
       diagnostic.related_sequence =
-          (static_cast<uint32_t>(session.diagnostic_last_hello_result) << 24U) |
-          (static_cast<uint32_t>(session.diagnostic_last_parser_status) << 16U) |
-          (session.diagnostic_hello_packets & 0xffffU);
-      diagnostic.context = parser.cobs_errors + parser.crc_errors +
-                           parser.version_errors + parser.type_errors +
-                           parser.length_errors + parser.other_errors;
+          (static_cast<uint32_t>(snapshot.hello_result) << 24U) |
+          (static_cast<uint32_t>(snapshot.parser_status) << 16U) |
+          (snapshot.hello_packets & 0xffffU);
+      diagnostic.context = snapshot.parser_errors;
       break;
-    case DiagnosticEvent::Transmit:
+    case navbench::DiagnosticEvent::Transmit:
       diagnostic.related_sequence =
           (static_cast<uint32_t>(lastWriteRequested) << 16U) |
           static_cast<uint32_t>(lastWriteResult);
-      diagnostic.context = serialTxBytes;
+      diagnostic.context = serialTxStager.total_bytes_written();
       break;
-    case DiagnosticEvent::Queue:
-      diagnostic.related_sequence = session.tx_frames;
+    case navbench::DiagnosticEvent::Queue:
+      diagnostic.related_sequence = snapshot.response_frames_created;
       diagnostic.context =
-          (session.tx_dropped << 16U) |
-          static_cast<uint32_t>(firmwareSession.pending_frames() & 0xffffU);
+          (snapshot.response_frames_dropped << 16U) |
+          static_cast<uint32_t>(snapshot.response_frames_pending);
       break;
   }
 
@@ -107,14 +111,18 @@ bool stageDiagnosticFrame(uint32_t nowMs) {
     return false;
   }
   size_t frameSize = 0U;
-  if (navbench::protocol::encodePacket(
-          navbench::protocol::MessageType::Error, diagnosticSequence++,
-          firmwareSession.last_step_id(), payload, payloadSize, pendingTx,
-          sizeof(pendingTx), &frameSize) != navbench::protocol::Status::Ok) {
+  uint8_t* frame = serialTxStager.writable_buffer();
+  if (frame == nullptr) {
     return false;
   }
-  pendingTxSize = frameSize;
-  return true;
+  if (navbench::protocol::encodePacket(
+          navbench::protocol::MessageType::Error, diagnosticSequence++,
+          firmwareSession.last_step_id(), payload, payloadSize, frame,
+          serialTxStager.capacity(), &frameSize) !=
+      navbench::protocol::Status::Ok) {
+    return false;
+  }
+  return serialTxStager.commit_frame(frameSize);
 #else
   (void)nowMs;
   return false;
@@ -122,21 +130,22 @@ bool stageDiagnosticFrame(uint32_t nowMs) {
 }
 
 void transmitSerial(uint32_t nowMs) {
-  if (pendingTxOffset == pendingTxSize) {
-    pendingTxOffset = 0U;
-    pendingTxSize = 0U;
-    if (!firmwareSession.pop_frame(pendingTx, sizeof(pendingTx),
-                                   &pendingTxSize)) {
+  if (serialTxStager.idle()) {
+    size_t frameSize = 0U;
+    uint8_t* frame = serialTxStager.writable_buffer();
+    if (frame != nullptr &&
+        firmwareSession.pop_frame(frame, serialTxStager.capacity(),
+                                  &frameSize)) {
+      (void)serialTxStager.commit_frame(frameSize);
+    } else {
       (void)stageDiagnosticFrame(nowMs);
     }
   }
-  if (pendingTxSize == 0U) {
+  if (serialTxStager.idle()) {
     return;
   }
 
-  const size_t remaining = pendingTxSize - pendingTxOffset;
-  size_t count =
-      remaining < kMaximumTxBytesPerLoop ? remaining : kMaximumTxBytesPerLoop;
+  size_t count = serialTxStager.next_write_size(kMaximumTxBytesPerLoop);
 #if !defined(NO_USB)
   // UNO R4 WiFi's default ESP32-S3 bridge is _UART1_. Its UART class inherits
   // Print::availableForWrite(), which always returns zero, so that method is
@@ -150,16 +159,22 @@ void transmitSerial(uint32_t nowMs) {
     count = writable;
   }
 #endif
-  const size_t written = Serial.write(pendingTx + pendingTxOffset, count);
-  if (written <= count) {
-    pendingTxOffset += written;
+  const size_t written = Serial.write(serialTxStager.pending_data(), count);
+#if defined(NO_USB)
+  // Renesas UART::write() returns on TX_DATA_EMPTY while the final byte is
+  // still shifting. Starting the next chunk before TX_COMPLETE can reuse the
+  // driver state at a frame boundary. Bound the wait to the final byte so a
+  // staged frame remains contiguous on the UNO R4 WiFi UART bridge.
+  if (written != 0U) {
+    Serial.flush();
   }
+#endif
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
   lastWriteRequested = static_cast<uint16_t>(count);
   lastWriteResult =
       static_cast<uint16_t>(written <= 0xffffU ? written : 0xffffU);
-  serialTxBytes += static_cast<uint32_t>(written);
 #endif
+  (void)serialTxStager.acknowledge_write(count, written);
 }
 
 navbench::HmiState hmiState(navbench::SafetyState state) {
@@ -209,7 +224,7 @@ void setup() {
   const uint32_t nowMs = millis();
   firmwareSession.reset(nowMs);
 #if defined(NAVBENCH_SERIAL_DIAGNOSTIC)
-  lastDiagnosticMs = nowMs - kDiagnosticPeriodMs;
+  diagnosticScheduler.reset(nowMs);
 #endif
 }
 
@@ -218,7 +233,9 @@ void loop() {
   const uint32_t nowMs = millis();
 
   receiveSerial(nowMs);
+#if !defined(NAVBENCH_SERIAL_DIAGNOSTIC)
   firmwareSession.tick(nowMs, firmwareSession.last_step_id());
+#endif
   transmitSerial(nowMs);
   updateHmi(nowMs);
 

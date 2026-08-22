@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import struct
 import sys
 import unittest
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from navbench.protocol import (
     ErrorPayload,
     GnssSample,
     HealthStatusPayload,
+    HeartbeatPayload,
     HelloAckPayload,
     HelloStatus,
     MessageType,
@@ -30,6 +32,9 @@ from navbench.protocol import (
     SensorFramePayload,
     StateEstimatePayload,
     StreamParser,
+    cobs_decode,
+    cobs_encode,
+    crc16_ccitt,
     decode_packet_payload,
     encode_packet,
     make_packet,
@@ -205,7 +210,20 @@ class ScriptedControllerTransport:
 
 
 class DiagnosticControllerTransport:
-    def __init__(self, clock: FakeClock, *, emit_beacon: bool = True) -> None:
+    def __init__(
+        self,
+        clock: FakeClock,
+        *,
+        emit_beacon: bool = True,
+        maximum_write_size: int | None = None,
+        maximum_read_size: int | None = None,
+        lag_first_accepted_rx_snapshot: bool = False,
+        stale_rx_snapshot_after_full: bool = False,
+        write_diagnostic: tuple[int, int] | None = (16, 16),
+        beacon_kind: str = "valid",
+        corrupt_after_hello: bool = False,
+        incompatible_ack: bool = False,
+    ) -> None:
         self.clock = clock
         self.emit_beacon = emit_beacon
         self._open = True
@@ -218,17 +236,33 @@ class DiagnosticControllerTransport:
         self.hello_result = 0
         self.hello_packets = 0
         self.response_frames = 0
+        self.maximum_write_size = maximum_write_size
+        self.maximum_read_size = maximum_read_size
+        self.lag_first_accepted_rx_snapshot = lag_first_accepted_rx_snapshot
+        self.stale_rx_snapshot_after_full = stale_rx_snapshot_after_full
+        self.write_diagnostic = write_diagnostic
+        self.beacon_kind = beacon_kind
+        self.corrupt_after_hello = corrupt_after_hello
+        self.incompatible_ack = incompatible_ack
+        self._accepted_rx_snapshot_lagged = False
+        self._diagnostics_dirty = True
 
     @property
     def is_open(self) -> bool:
         return self._open
 
     def write(self, data: bytes) -> int:
-        self.serial_rx_bytes += len(data)
-        if data == b"\x01\x00":
+        accepted = (
+            data
+            if self.maximum_write_size is None
+            else data[: self.maximum_write_size]
+        )
+        self.serial_rx_bytes += len(accepted)
+        if accepted == b"\x01\x00":
             self.parser_errors += 1
-            return len(data)
-        batch = self._parser.feed(data)
+            self._diagnostics_dirty = True
+            return len(accepted)
+        batch = self._parser.feed(accepted)
         self.parser_errors += len(batch.errors)
         self.parser_frames += len(batch.packets)
         for packet in batch.packets:
@@ -243,16 +277,35 @@ class DiagnosticControllerTransport:
                         accepted_version=1,
                         status=HelloStatus.OK,
                         role=EndpointRole.CONTROLLER,
-                        capabilities=DEFAULT_REQUIRED_CAPABILITIES,
+                        capabilities=(
+                            0
+                            if self.incompatible_ack
+                            else DEFAULT_REQUIRED_CAPABILITIES
+                        ),
                         max_payload=128,
                         heartbeat_timeout_ms=500,
                     ),
                 )
-        return len(data)
+                if self.corrupt_after_hello:
+                    self._queue_corrupt_frame()
+                    self.corrupt_after_hello = False
+        self._diagnostics_dirty = True
+        return len(accepted)
+
+    def simulate_session_reset(self) -> None:
+        self._parser = StreamParser()
+        self.parser_frames = 0
+        self.parser_errors = 0
+        self.hello_result = 0
+        self.hello_packets = 0
+        self.response_frames = 0
 
     def read(self, max_bytes: int = 512) -> bytes:
-        if self.emit_beacon and not self._received:
+        if self.emit_beacon and self._diagnostics_dirty and not self._received:
             self._emit_diagnostics()
+            self._diagnostics_dirty = False
+        if self.maximum_read_size is not None:
+            max_bytes = min(max_bytes, self.maximum_read_size)
         output = bytes(self._received[:max_bytes])
         del self._received[:max_bytes]
         return output
@@ -264,8 +317,19 @@ class DiagnosticControllerTransport:
         self._open = False
 
     def _emit_diagnostics(self) -> None:
+        if self.beacon_kind != "valid" and self._diagnostic_sequence == 0x80000000:
+            self._queue_invalid_beacon()
+            return
         parser_word = (self.hello_result << 24) | self.hello_packets
-        events = (
+        reported_rx_bytes = self.serial_rx_bytes
+        if (
+            self.hello_result == 1
+            and self.lag_first_accepted_rx_snapshot
+            and not self._accepted_rx_snapshot_lagged
+        ):
+            reported_rx_bytes = min(reported_rx_bytes, 2)
+            self._accepted_rx_snapshot_lagged = True
+        events = [
             ErrorPayload(
                 ApplicationErrorCode.DIAGNOSTIC,
                 1,
@@ -275,7 +339,7 @@ class DiagnosticControllerTransport:
             ErrorPayload(
                 ApplicationErrorCode.DIAGNOSTIC,
                 2,
-                self.serial_rx_bytes,
+                reported_rx_bytes,
                 self.parser_frames,
             ),
             ErrorPayload(
@@ -286,19 +350,87 @@ class DiagnosticControllerTransport:
             ),
             ErrorPayload(
                 ApplicationErrorCode.DIAGNOSTIC,
-                4,
-                (16 << 16) | 16,
-                64,
-            ),
-            ErrorPayload(
-                ApplicationErrorCode.DIAGNOSTIC,
                 5,
                 self.response_frames,
                 0,
             ),
-        )
+        ]
+        if self.write_diagnostic is not None:
+            requested, written = self.write_diagnostic
+            events.insert(
+                3,
+                ErrorPayload(
+                    ApplicationErrorCode.DIAGNOSTIC,
+                    4,
+                    (requested << 16) | written,
+                    written,
+                ),
+            )
         for payload in events:
             self._queue_packet(MessageType.ERROR, 0, payload)
+        if self.hello_result == 1 and self.lag_first_accepted_rx_snapshot:
+            self.lag_first_accepted_rx_snapshot = False
+            self._emit_diagnostics()
+        elif self.hello_result == 1 and self.stale_rx_snapshot_after_full:
+            self.stale_rx_snapshot_after_full = False
+            actual = self.serial_rx_bytes
+            self.serial_rx_bytes = min(actual, 2)
+            self._emit_diagnostics()
+            self.serial_rx_bytes = actual
+
+    def _queue_invalid_beacon(self) -> None:
+        if self.beacon_kind == "wrong_type":
+            self._queue_packet(
+                MessageType.HEARTBEAT,
+                0,
+                HeartbeatPayload(1, 1, RuntimeState.READY),
+            )
+            return
+        frame = encode_packet(
+            make_packet(
+                MessageType.ERROR,
+                self._diagnostic_sequence,
+                0,
+                ErrorPayload(
+                    ApplicationErrorCode.DIAGNOSTIC,
+                    1,
+                    0x4E424447,
+                    1,
+                ),
+            )
+        )
+        self._diagnostic_sequence += 1
+        if self.beacon_kind == "wrong_version":
+            raw = bytearray(cobs_decode(frame[:-1]))
+            raw[0] += 1
+            raw[-2:] = struct.pack("<H", crc16_ccitt(raw[:-2]))
+            frame = cobs_encode(raw) + b"\x00"
+        elif self.beacon_kind == "corrupt":
+            damaged = bytearray(frame)
+            damaged[len(damaged) // 2] ^= 0x01
+            frame = bytes(damaged)
+        else:
+            raise ValueError(f"unknown beacon kind: {self.beacon_kind}")
+        self._received.extend(frame)
+
+    def _queue_corrupt_frame(self) -> None:
+        frame = encode_packet(
+            make_packet(
+                MessageType.ERROR,
+                self._diagnostic_sequence,
+                0,
+                ErrorPayload(
+                    ApplicationErrorCode.DIAGNOSTIC,
+                    2,
+                    self.serial_rx_bytes,
+                    self.parser_frames,
+                ),
+            )
+        )
+        self._diagnostic_sequence += 1
+        raw = bytearray(cobs_decode(frame[:-1]))
+        raw[12] ^= 0x01
+        self._received.extend(cobs_encode(raw) + b"\x00")
 
     def _queue_packet(
         self,
@@ -388,7 +520,155 @@ class HardwareValidationTests(unittest.TestCase):
         self.assertEqual(diagnostic["hello_result"], "ACCEPTED")
         self.assertEqual(diagnostic["parser_status"], "OK")
         self.assertEqual(diagnostic["hello_ack"]["status"], "OK")
-        self.assertGreaterEqual(diagnostic["response_frames_created"], 1)
+        self.assertEqual(diagnostic["response_frames_created"], 1)
+
+    def test_valid_beacon_with_zero_write_snapshot_still_sends_hello(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(
+            clock,
+            write_diagnostic=(0, 0),
+        )
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+        diagnostic = result.summary["diagnostic"]
+        self.assertTrue(diagnostic["beacon_seen"])
+        self.assertTrue(diagnostic["tx_proven"])
+        self.assertTrue(diagnostic["write_diagnostic_seen"])
+        self.assertEqual(diagnostic["last_write_requested"], 0)
+        self.assertEqual(diagnostic["hello_packets"], 1)
+
+    def test_protocol_diagnostic_accepts_fragmented_beacon(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(clock, maximum_read_size=1)
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+        self.assertEqual(result.summary["host_parser_statistics"]["crc_errors"], 0)
+
+    def test_protocol_diagnostic_accepts_partial_host_writes(self) -> None:
+        for maximum in (1, 2, 3):
+            with self.subTest(maximum=maximum):
+                clock = FakeClock()
+                controller = DiagnosticControllerTransport(
+                    clock, maximum_write_size=maximum
+                )
+                result = run_serial_diagnostic(
+                    HardwareConfig("/dev/cu.usbmodem-test"),
+                    "protocol",
+                    transport_factory=lambda config, item=controller: item,
+                    clock=clock,
+                    sleep=clock.sleep,
+                )
+
+                self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+                diagnostic = result.summary["diagnostic"]
+                self.assertEqual(diagnostic["hello_result"], "ACCEPTED")
+                self.assertGreater(diagnostic["serial_rx_bytes"], maximum)
+                self.assertEqual(
+                    result.summary["host_parser_statistics"]["crc_errors"], 0
+                )
+
+    def test_accepted_hello_waits_for_monotonic_complete_rx_snapshot(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(
+            clock, lag_first_accepted_rx_snapshot=True
+        )
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+        self.assertGreater(result.summary["diagnostic"]["serial_rx_bytes"], 2)
+
+    def test_ack_before_snapshot_does_not_fail_early(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(
+            clock, lag_first_accepted_rx_snapshot=True
+        )
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+        self.assertIsNotNone(result.summary["diagnostic"]["hello_ack"])
+        self.assertEqual(result.summary["diagnostic"]["response_frames_created"], 1)
+
+    def test_stale_snapshot_cannot_reduce_complete_rx_counter(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(
+            clock, stale_rx_snapshot_after_full=True
+        )
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.SUCCESS)
+        self.assertGreater(result.summary["diagnostic"]["serial_rx_bytes"], 2)
+
+    def test_transport_rx_counter_is_monotonic_across_session_reset(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(clock)
+        self.assertEqual(controller.write(b"\x05\x11\x22"), 3)
+        before = controller.serial_rx_bytes
+        controller.simulate_session_reset()
+        self.assertEqual(controller.serial_rx_bytes, before)
+        self.assertEqual(controller.write(b"\x33\x00"), 2)
+        self.assertEqual(controller.serial_rx_bytes, before + 2)
+
+    def test_long_fragmented_diagnostic_stream_has_zero_crc_errors(self) -> None:
+        parser = StreamParser()
+        stream = bytearray()
+        for sequence in range(1000):
+            stream.extend(
+                encode_packet(
+                    make_packet(
+                        MessageType.ERROR,
+                        0x80000000 + sequence,
+                        0,
+                        ErrorPayload(
+                            ApplicationErrorCode.DIAGNOSTIC,
+                            1,
+                            0x4E424447,
+                            sequence,
+                        ),
+                    )
+                )
+            )
+        packets = []
+        offset = 0
+        while offset < len(stream):
+            count = min((offset % 31) + 1, len(stream) - offset)
+            batch = parser.feed(bytes(stream[offset : offset + count]))
+            packets.extend(batch.packets)
+            offset += count
+        self.assertEqual(len(packets), 1000)
+        self.assertEqual(parser.stats.crc_errors, 0)
+        self.assertEqual(parser.stats.cobs_errors, 0)
 
     def test_diagnostic_without_beacon_fails_explicitly(self) -> None:
         clock = FakeClock()
@@ -403,6 +683,72 @@ class HardwareValidationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, HardwareExitCode.DIAGNOSTIC_FAILED)
         self.assertFalse(result.succeeded)
+
+    def test_invalid_diagnostic_beacons_fail_bounded(self) -> None:
+        for beacon_kind in ("corrupt", "wrong_type", "wrong_version"):
+            with self.subTest(beacon_kind=beacon_kind):
+                clock = FakeClock()
+                controller = DiagnosticControllerTransport(
+                    clock, beacon_kind=beacon_kind
+                )
+                result = run_serial_diagnostic(
+                    HardwareConfig("/dev/cu.usbmodem-test"),
+                    "protocol",
+                    transport_factory=lambda config, item=controller: item,
+                    clock=clock,
+                    sleep=clock.sleep,
+                )
+
+                self.assertEqual(
+                    result.exit_code, HardwareExitCode.DIAGNOSTIC_FAILED
+                )
+                self.assertFalse(result.summary["diagnostic"]["beacon_seen"])
+                self.assertLess(clock(), 6.1)
+
+    def test_protocol_phase_corruption_is_not_hidden_by_startup_baseline(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(
+            clock, corrupt_after_hello=True
+        )
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.DIAGNOSTIC_FAILED)
+        parser_stats = result.summary["host_parser_statistics"]
+        self.assertGreater(
+            sum(
+                parser_stats[name]
+                for name in (
+                    "cobs_errors",
+                    "crc_errors",
+                    "length_errors",
+                    "type_errors",
+                    "version_errors",
+                    "other_errors",
+                )
+            ),
+            0,
+        )
+        self.assertIn("new invalid frame", result.message)
+
+    def test_protocol_diagnostic_rejects_incompatible_ack_fields(self) -> None:
+        clock = FakeClock()
+        controller = DiagnosticControllerTransport(clock, incompatible_ack=True)
+        result = run_serial_diagnostic(
+            HardwareConfig("/dev/cu.usbmodem-test"),
+            "protocol",
+            transport_factory=lambda config: controller,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result.exit_code, HardwareExitCode.DIAGNOSTIC_FAILED)
+        self.assertIn("incompatible", result.message)
 
     def test_normal_and_watchdog_exchange_use_typed_protocol(self) -> None:
         clock = FakeClock()

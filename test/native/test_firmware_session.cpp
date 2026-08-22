@@ -113,6 +113,17 @@ bool test_fragmented_handshake_and_version_rejection() {
   return true;
 }
 
+bool test_no_unsolicited_telemetry_before_hello() {
+  navbench::FirmwareSession session;
+  session.tick(100U, 0U);
+  session.tick(1000U, 0U);
+  CHECK(!session.session_active());
+  CHECK(session.pending_frames() == 0U);
+  CHECK(session.stats().tx_frames == 0U);
+  CHECK(session.core().runtime().state() == navbench::SafetyState::Ready);
+  return true;
+}
+
 bool test_hello_restarts_wire_session_without_clearing_safety_latch() {
   navbench::FirmwareSession session;
   CHECK(feed_hello(session));
@@ -427,6 +438,7 @@ bool test_fixed_tx_overflow_enters_safe_stop_and_timing_counters() {
 
 int main() {
   if (!test_fragmented_handshake_and_version_rejection() ||
+      !test_no_unsolicited_telemetry_before_hello() ||
       !test_hello_restarts_wire_session_without_clearing_safety_latch() ||
       !test_route_sensor_sequence_and_timeout() ||
       !test_ready_without_route_is_neutral_and_old_samples_do_not_refresh() ||
